@@ -1,0 +1,104 @@
+# Valgrind suppression file for spprof
+#
+# Python itself has some known Valgrind issues that we need to suppress.
+# This file contains suppressions for Python internals and known safe patterns.
+
+# Python memory allocator
+{
+   python_pymalloc
+   Memcheck:Leak
+   ...
+   fun:PyObject_Malloc
+   ...
+}
+
+{
+   python_pyobject_realloc
+   Memcheck:Leak
+   ...
+   fun:PyObject_Realloc
+   ...
+}
+
+# Python GC
+{
+   python_gc
+   Memcheck:Leak
+   ...
+   fun:_PyObject_GC_*
+   ...
+}
+
+# Python unicode
+{
+   python_unicode
+   Memcheck:Leak
+   ...
+   fun:PyUnicode_*
+   ...
+}
+
+# Thread-local storage (used for PyThreadState)
+{
+   pthread_tls
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:pthread_*
+   ...
+}
+
+# dlopen (loading shared libraries)
+{
+   dlopen
+   Memcheck:Leak
+   ...
+   fun:dlopen
+   ...
+}
+
+# Python import system
+{
+   python_import
+   Memcheck:Leak
+   ...
+   fun:PyImport_*
+   ...
+}
+
+# Python type creation
+{
+   python_type
+   Memcheck:Leak
+   ...
+   fun:PyType_*
+   ...
+}
+
+# glibc internals
+{
+   glibc_memalign
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:memalign
+   ...
+}
+
+# Python frame objects (managed by Python GC)
+{
+   python_frame
+   Memcheck:Leak
+   ...
+   fun:_PyFrame_*
+   ...
+}
+
+# spprof ring buffer (intentionally long-lived)
+{
+   spprof_ringbuffer
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:ringbuffer_create*
+   ...
+}
+

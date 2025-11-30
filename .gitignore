@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# C extension build artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.dylib
+*.dSYM/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# Development tools
+.specify/
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Build tools
+.hatch/
+pip-wheel-metadata/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Profiler output (don't commit test profiles)
+*.json
+!package.json
+*.collapsed
+*.svg
+
+# Version file (generated)
+src/spprof/_version.py
+
+

@@ -1,0 +1,150 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spprof"
+version = "0.1.0"
+description = "High-performance sampling profiler for Python applications"
+readme = "README.md"
+license = "MIT"
+license-files = []
+requires-python = ">=3.9"
+authors = [
+    { name = "spprof contributors" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: C",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+keywords = ["profiler", "sampling", "performance", "flamegraph", "speedscope"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-timeout>=2.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Periecle/spprof"
+Documentation = "https://github.com/Periecle/spprof#readme"
+Repository = "https://github.com/Periecle/spprof"
+Issues = "https://github.com/Periecle/spprof/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+spprof = ["py.typed", "_profiler.pyi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+timeout = 30
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+strict = true
+ignore_missing_imports = true
+exclude = ["build", "dist"]
+
+[[tool.mypy.overrides]]
+module = "spprof._native"
+ignore_missing_imports = true
+
+# =============================================================================
+# Ruff - Fast Python linter and formatter (replaces black, isort, flake8)
+# =============================================================================
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+exclude = [
+    ".git",
+    ".venv",
+    "build",
+    "dist",
+    "*.egg-info",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "RUF",    # Ruff-specific rules
+]
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "B008",   # Function call in default argument
+    "ARG001", # Unused function argument (common in APIs)
+    "SIM108", # Ternary operator (readability preference)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["spprof"]
+force-single-line = false
+lines-after-imports = 2
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+
+# =============================================================================
+# Coverage configuration
+# =============================================================================
+[tool.coverage.run]
+source = ["src/spprof"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+show_missing = true
+skip_covered = false
+fail_under = 60
+

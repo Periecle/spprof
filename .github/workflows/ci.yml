@@ -1,0 +1,231 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Mondays to catch upstream changes
+    - cron: '0 0 * * 1'
+
+env:
+  FORCE_COLOR: 1
+
+jobs:
+  # Main test matrix across OS and Python versions
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          # Test Python 3.14-dev on Linux only (most stable for dev builds)
+          - os: ubuntu-latest
+            python-version: "3.14-dev"
+            experimental: true
+
+    continue-on-error: ${{ matrix.experimental || false }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/ -v --tb=short -x --cov=spprof --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Run examples
+        run: |
+          python examples/basic_profile.py
+        continue-on-error: ${{ matrix.experimental || false }}
+
+  # AddressSanitizer build for memory safety (Linux only)
+  asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-timeout
+
+      - name: Build with ASan
+        run: |
+          export CFLAGS="-fsanitize=address -fno-omit-frame-pointer -g"
+          export LDFLAGS="-fsanitize=address"
+          pip install -e . --no-build-isolation
+        continue-on-error: true
+
+      - name: Run tests with ASan
+        run: |
+          python -m pytest tests/ -v --tb=short --timeout=60
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=0
+        continue-on-error: true
+
+  # Valgrind memory check (Linux only)
+  valgrind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install -e .
+
+      - name: Run tests under Valgrind
+        run: |
+          valgrind --error-exitcode=1 --leak-check=full \
+            --suppressions=valgrind.supp \
+            python -m pytest tests/test_profiler.py -v --tb=short
+        continue-on-error: true
+
+  # Python 3.13 free-threaded build
+  free-threaded:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13 free-threaded
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13t"
+        continue-on-error: true
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+        continue-on-error: true
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -v --tb=short
+        continue-on-error: true
+
+  # Benchmarks - run on stable versions only
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run benchmarks
+        run: |
+          python benchmarks/overhead.py --intervals 1 10 100 --json > benchmark_results.json
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark_results.json
+
+  # Lint, format, and type checking
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff mypy
+
+      - name: Check formatting (ruff format)
+        run: |
+          ruff format --check src/ tests/ benchmarks/ examples/
+
+      - name: Lint (ruff check)
+        run: |
+          ruff check src/ tests/ benchmarks/ examples/
+
+      - name: Type check (mypy)
+        run: |
+          mypy src/spprof --ignore-missing-imports
+
+  # Build wheels for all platforms
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build wheel
+
+      - name: Build wheel
+        run: |
+          python -m build --wheel
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: dist/*.whl
