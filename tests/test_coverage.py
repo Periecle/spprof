@@ -480,12 +480,22 @@ def test_profile_property_before_exit():
 
 
 def test_start_with_unwritable_path():
-    """Test start() with unwritable output path raises PermissionError."""
+    """Test start() with unwritable output path raises an error."""
+    import platform
+
     import spprof
 
-    # Try to write to a path that doesn't exist and can't be created
-    with pytest.raises(PermissionError):
-        spprof.start(interval_ms=10, output_path="/nonexistent/deep/path/file.json")
+    # Use platform-appropriate paths that should fail
+    if platform.system() == "Windows":
+        # Windows: Try to write to a protected system path
+        bad_path = "C:\\Windows\\System32\\spprof_test_file.json"
+    else:
+        # Unix: Try to write to root-owned directory
+        bad_path = "/root/spprof_test_file.json"
+
+    # Should raise PermissionError or OSError (FileNotFoundError on some systems)
+    with pytest.raises((PermissionError, OSError)):
+        spprof.start(interval_ms=10, output_path=bad_path)
 
 
 def test_native_frame_repr():

@@ -14,7 +14,12 @@
 #include <stdint.h>
 
 /**
- * Get current frame from thread state using public API
+ * Get current frame from thread state using public API.
+ *
+ * NOTE: On Linux, this is called from signal handler context where the signal
+ * fires in the thread's own context, so PyEval_GetFrame() is correct.
+ * On Windows, the caller should use PyThreadState_GetFrame() directly
+ * since the timer runs in a different thread.
  */
 static inline void* compat_get_current_frame(PyThreadState* tstate) {
     if (tstate == NULL) {

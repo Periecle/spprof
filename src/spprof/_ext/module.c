@@ -9,7 +9,20 @@
 
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+
+/* Atomic operations - use platform-specific implementations */
+#ifdef _WIN32
+#include <windows.h>
+/* On Windows, use volatile LONG with Interlocked functions */
+#define ATOMIC_INT volatile LONG
+#define ATOMIC_LOAD(ptr) InterlockedCompareExchange(ptr, 0, 0)
+#define ATOMIC_STORE(ptr, val) InterlockedExchange(ptr, val)
+#else
 #include <stdatomic.h>
+#define ATOMIC_INT atomic_int
+#define ATOMIC_LOAD(ptr) atomic_load(ptr)
+#define ATOMIC_STORE(ptr, val) atomic_store(ptr, val)
+#endif
 
 #include "ringbuffer.h"
 #include "framewalker.h"
@@ -24,7 +37,7 @@
 __attribute__((visibility("default")))
 #endif
 RingBuffer* g_ringbuffer = NULL;
-static atomic_int g_is_active = 0;
+static ATOMIC_INT g_is_active = 0;
 static uint64_t g_start_time = 0;
 static uint64_t g_interval_ns = 0;
 static int g_module_initialized = 0;
@@ -46,7 +59,7 @@ static PyObject* spprof_start(PyObject* self, PyObject* args, PyObject* kwargs) 
     }
 
     /* Check if already running (atomic read) */
-    if (atomic_load(&g_is_active)) {
+    if (ATOMIC_LOAD(&g_is_active)) {
         PyErr_SetString(PyExc_RuntimeError, "Profiler already running");
         return NULL;
     }
@@ -83,7 +96,7 @@ static PyObject* spprof_start(PyObject* self, PyObject* args, PyObject* kwargs) 
 
     g_interval_ns = interval_ns;
     g_start_time = platform_monotonic_ns();
-    atomic_store(&g_is_active, 1);
+    ATOMIC_STORE(&g_is_active, 1);
 
     Py_RETURN_NONE;
 }
@@ -99,14 +112,14 @@ static PyObject* spprof_start(PyObject* self, PyObject* args, PyObject* kwargs) 
  *   - 'frames': list of dicts with 'function', 'filename', 'lineno', 'is_native'
  */
 static PyObject* spprof_stop(PyObject* self, PyObject* args) {
-    if (!atomic_load(&g_is_active)) {
+    if (!ATOMIC_LOAD(&g_is_active)) {
         PyErr_SetString(PyExc_RuntimeError, "Profiler not running");
         return NULL;
     }
 
     /* Stop the timer */
     platform_timer_destroy();
-    atomic_store(&g_is_active, 0);
+    ATOMIC_STORE(&g_is_active, 0);
 
     /* Get resolved samples */
     ResolvedSample* samples = NULL;
@@ -190,7 +203,7 @@ static PyObject* spprof_stop(PyObject* self, PyObject* args) {
  * _is_active() - Check if profiler is running
  */
 static PyObject* spprof_is_active(PyObject* self, PyObject* args) {
-    if (atomic_load(&g_is_active)) {
+    if (ATOMIC_LOAD(&g_is_active)) {
         Py_RETURN_TRUE;
     }
     Py_RETURN_FALSE;
@@ -206,7 +219,7 @@ static PyObject* spprof_is_active(PyObject* self, PyObject* args) {
  *   - 'interval_ns': int
  */
 static PyObject* spprof_get_stats(PyObject* self, PyObject* args) {
-    int is_active = atomic_load(&g_is_active);
+    int is_active = ATOMIC_LOAD(&g_is_active);
     if (!is_active && g_ringbuffer == NULL) {
         Py_RETURN_NONE;
     }
@@ -234,7 +247,7 @@ static PyObject* spprof_get_stats(PyObject* self, PyObject* args) {
  */
 static PyObject* spprof_register_thread(PyObject* self, PyObject* args) {
     /* If profiler is not active, this is a no-op - return True */
-    if (!atomic_load(&g_is_active)) {
+    if (!ATOMIC_LOAD(&g_is_active)) {
         Py_RETURN_TRUE;
     }
 
@@ -254,7 +267,7 @@ static PyObject* spprof_register_thread(PyObject* self, PyObject* args) {
  */
 static PyObject* spprof_unregister_thread(PyObject* self, PyObject* args) {
     /* If profiler is not active, this is a no-op - return True */
-    if (!atomic_load(&g_is_active)) {
+    if (!ATOMIC_LOAD(&g_is_active)) {
         Py_RETURN_TRUE;
     }
 
@@ -385,9 +398,9 @@ static PyMethodDef SpProfMethods[] = {
  */
 static void spprof_cleanup(void) {
     /* Stop profiling if still running */
-    if (atomic_load(&g_is_active)) {
+    if (ATOMIC_LOAD(&g_is_active)) {
         platform_timer_destroy();
-        atomic_store(&g_is_active, 0);
+        ATOMIC_STORE(&g_is_active, 0);
         resolver_shutdown();
     }
     

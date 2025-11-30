@@ -5,7 +5,7 @@
  *   - Timer management (per-thread CPU time sampling)
  *   - Thread identification
  *   - Monotonic time
- *   - Signal handling
+ *   - Signal handling (POSIX only)
  *
  * Copyright (c) 2024 spprof contributors
  * SPDX-License-Identifier: MIT
@@ -15,7 +15,11 @@
 #define SPPROF_PLATFORM_H
 
 #include <stdint.h>
+
+/* Include signal.h only on POSIX systems */
+#ifndef _WIN32
 #include <signal.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -115,10 +119,11 @@ int platform_unregister_thread(void);
 
 /*
  * =============================================================================
- * Signal Handler Management
+ * Signal Handler Management (POSIX only)
  * =============================================================================
  */
 
+#ifndef _WIN32
 /**
  * Set custom signal handler (deprecated - use signal_handler.c).
  *
@@ -126,11 +131,12 @@ int platform_unregister_thread(void);
  * @return 0 on success, -1 on error
  */
 int platform_set_signal_handler(void (*handler)(int, siginfo_t*, void*));
+#endif
 
 /**
  * Restore original signal handler.
  *
- * @return 0 on success, -1 on error
+ * @return 0 on success, -1 on error (no-op on Windows)
  */
 int platform_restore_signal_handler(void);
 
@@ -183,6 +189,82 @@ void platform_get_stats(
     uint64_t* samples_dropped,
     uint64_t* timer_overruns
 );
+
+/*
+ * =============================================================================
+ * Windows-Specific Extensions
+ * =============================================================================
+ */
+
+#ifdef SPPROF_PLATFORM_WINDOWS
+
+/**
+ * Get extended Windows-specific statistics.
+ *
+ * @param samples_captured Output: number of samples captured
+ * @param samples_dropped Output: number of samples dropped
+ * @param timer_callbacks Output: number of timer callbacks executed
+ * @param gil_wait_time_ns Output: total time waiting for GIL in nanoseconds
+ */
+void platform_get_extended_stats(
+    uint64_t* samples_captured,
+    uint64_t* samples_dropped,
+    uint64_t* timer_callbacks,
+    uint64_t* gil_wait_time_ns
+);
+
+/**
+ * Enable or disable CPU time sampling (vs wall time).
+ *
+ * When enabled, timestamps are based on thread CPU time using GetThreadTimes()
+ * instead of wall clock time. This is useful for profiling CPU-bound code.
+ *
+ * @param enabled 1 to enable, 0 to disable
+ */
+void platform_set_cpu_time(int enabled);
+
+/**
+ * Check if CPU time sampling is enabled.
+ *
+ * @return 1 if enabled, 0 if disabled
+ */
+int platform_get_cpu_time(void);
+
+/**
+ * Enable or disable native stack unwinding.
+ *
+ * When enabled, the profiler captures native C/C++ stack frames using
+ * CaptureStackBackTrace() in addition to Python frames.
+ *
+ * @param enabled 1 to enable, 0 to disable
+ */
+void platform_set_native_unwinding(int enabled);
+
+/**
+ * Check if native unwinding is enabled.
+ *
+ * @return 1 if enabled, 0 if disabled
+ */
+int platform_get_native_unwinding(void);
+
+/**
+ * Enable or disable per-thread sampling mode.
+ *
+ * When enabled, each thread gets its own timer using CreateThreadpoolTimer
+ * instead of a global timer that samples all threads.
+ *
+ * @param enabled 1 to enable, 0 to disable
+ */
+void platform_set_per_thread_mode(int enabled);
+
+/**
+ * Check if per-thread sampling mode is enabled.
+ *
+ * @return 1 if enabled, 0 if disabled
+ */
+int platform_get_per_thread_mode(void);
+
+#endif /* SPPROF_PLATFORM_WINDOWS */
 
 /*
  * =============================================================================

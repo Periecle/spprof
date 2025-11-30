@@ -11,8 +11,17 @@
 #define SPPROF_RINGBUFFER_H
 
 #include <stdint.h>
-#include <stdatomic.h>
 #include <stddef.h>
+
+/* Platform-specific atomic types and operations */
+#ifdef _WIN32
+#include <windows.h>
+/* Windows uses Interlocked functions - defined in ringbuffer.c */
+typedef volatile LONGLONG ATOMIC_UINT64;
+#else
+#include <stdatomic.h>
+typedef _Atomic uint64_t ATOMIC_UINT64;
+#endif
 
 /* Ring buffer configuration */
 #define SPPROF_RING_SIZE 65536      /* Power of 2 for fast modulo */
@@ -55,9 +64,9 @@ typedef struct {
  *   - Overflow drops samples rather than blocking
  */
 typedef struct {
-    _Atomic uint64_t write_idx;                  /* Next write position (producer) */
-    _Atomic uint64_t read_idx;                   /* Next read position (consumer) */
-    _Atomic uint64_t dropped_count;              /* Samples dropped due to overflow */
+    ATOMIC_UINT64 write_idx;                     /* Next write position (producer) */
+    ATOMIC_UINT64 read_idx;                      /* Next read position (consumer) */
+    ATOMIC_UINT64 dropped_count;                 /* Samples dropped due to overflow */
     size_t capacity;                             /* Buffer capacity (power of 2) */
     size_t capacity_mask;                        /* capacity - 1 for fast modulo */
     RawSample* samples;                          /* Dynamically allocated sample slots */

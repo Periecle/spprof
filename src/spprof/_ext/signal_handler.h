@@ -4,6 +4,9 @@
  * This module provides the signal handling infrastructure for sampling.
  * The actual signal handler is fully async-signal-safe.
  *
+ * NOTE: On Windows, these functions are stubs implemented in platform/windows.c.
+ * The actual sampling is done via Windows timer queue timers.
+ *
  * Copyright (c) 2024 spprof contributors
  * SPDX-License-Identifier: MIT
  */
@@ -11,13 +14,18 @@
 #ifndef SPPROF_SIGNAL_HANDLER_H
 #define SPPROF_SIGNAL_HANDLER_H
 
-#include <signal.h>
 #include <stdint.h>
+
+/* Include signal.h only on POSIX systems */
+#ifndef _WIN32
+#include <signal.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#ifndef _WIN32
 /**
  * The actual signal handler function.
  *
@@ -28,6 +36,7 @@ extern "C" {
  * @param ucontext Platform-specific context
  */
 void spprof_signal_handler(int signum, siginfo_t* info, void* ucontext);
+#endif
 
 /**
  * Install the signal handler for the given signal.

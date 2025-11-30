@@ -42,14 +42,39 @@ static int g_initialized = 0;
  *
  * Uses Python's internal line number table to map bytecode offset to line.
  * Requires the GIL to be held.
+ *
+ * On Windows:
+ *   - If instr_ptr contains a line number directly (>0 and < 1M), use it
+ *   - Otherwise fall back to co_firstlineno
+ *   - The Windows platform now captures line numbers via PyFrame_GetLineNumber()
+ *     and stores them in the instr_ptrs array
+ *
+ * On POSIX with Python 3.11+:
+ *   - Use PyCode_Addr2Line for accurate line number from instruction pointer
  */
 static int compute_lineno_from_instr(PyCodeObject* co, uintptr_t instr_ptr) {
-    if (co == NULL || instr_ptr == 0) {
-        return co ? co->co_firstlineno : 0;
+    if (co == NULL) {
+        return 0;
+    }
+    
+    if (instr_ptr == 0) {
+        return co->co_firstlineno;
     }
 
-#if PY_VERSION_HEX >= 0x030B0000
-    /* Python 3.11+: Use PyCode_Addr2Line if available */
+#if defined(_WIN32)
+    /* On Windows, instr_ptr contains the line number directly (captured via
+     * PyFrame_GetLineNumber in windows.c). We detect this by checking if it's
+     * a reasonable line number (< 1,000,000). Actual instruction pointers would
+     * be much larger memory addresses. */
+    if (instr_ptr > 0 && instr_ptr < 1000000) {
+        return (int)instr_ptr;
+    }
+    return co->co_firstlineno;
+#elif PY_VERSION_HEX < 0x030B0000
+    /* Python < 3.11: Use first line number */
+    return co->co_firstlineno;
+#else
+    /* Python 3.11+ on POSIX: Use PyCode_Addr2Line if available */
     /* Calculate byte offset from code start */
     /* PyCode_GetCode returns a NEW REFERENCE - must decref! */
     PyObject* code_bytes = PyCode_GetCode((PyCodeObject*)co);
@@ -83,9 +108,6 @@ static int compute_lineno_from_instr(PyCodeObject* co, uintptr_t instr_ptr) {
         return co->co_firstlineno;
     }
     return lineno;
-#else
-    /* Fallback for older versions */
-    return co->co_firstlineno;
 #endif
 }
 

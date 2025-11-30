@@ -1,5 +1,5 @@
 /**
- * unwind.h - Native C-stack unwinding via libunwind
+ * unwind.h - Native C-stack unwinding
  *
  * This module provides optional C-stack unwinding to capture native
  * frames (C/C++ functions) alongside Python frames. This enables
@@ -7,9 +7,9 @@
  * flame graphs.
  *
  * Platform support:
- *   - Linux: Full support via libunwind
- *   - macOS: Partial support via system unwind APIs
- *   - Windows: Not supported (would need DbgHelp/StackWalk64)
+ *   - Linux: Full support via libunwind (if available) or glibc backtrace()
+ *   - macOS: Support via execinfo backtrace()
+ *   - Windows: Full support via CaptureStackBackTrace() + DbgHelp
  *
  * IMPORTANT: Native unwinding adds overhead. Use only when debugging
  * C extensions or native code performance.

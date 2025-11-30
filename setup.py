@@ -96,18 +96,23 @@ def get_extension():
     """
     Get the extension module configuration.
     """
-    # Check Python version
-    if sys.version_info < (3, 11):
+    # Platform detection
+    IS_WINDOWS = platform.system() == "Windows"
+    IS_MACOS = platform.system() == "Darwin"
+    IS_LINUX = platform.system() == "Linux"
+    
+    # Check Python version and platform for internal API support
+    # Windows doesn't need internal API (uses timer callbacks with GIL, not signals)
+    # Internal API is only for async-signal-safe frame walking on Linux/macOS
+    if IS_WINDOWS:
+        print("[spprof] Windows: Using public API (timer callbacks are GIL-safe)")
+        use_internal_api = False
+    elif sys.version_info < (3, 11):
         print("[spprof] WARNING: Python 3.11+ required for internal API access")
         print("[spprof] Building with public API fallback (not async-signal-safe)")
         use_internal_api = False
     else:
         use_internal_api = os.environ.get('SPPROF_USE_INTERNAL_API', '1') != '0'
-    
-    # Platform detection
-    IS_WINDOWS = platform.system() == "Windows"
-    IS_MACOS = platform.system() == "Darwin"
-    IS_LINUX = platform.system() == "Linux"
     
     # Source directory
     SRC_DIR = Path("src/spprof/_ext")
@@ -193,7 +198,11 @@ def get_extension():
             "/O2",
             "/W3",
             "/D_CRT_SECURE_NO_WARNINGS",
+            "/std:c11",  # Required for C11 features
         ]
+        # Link against required Windows libraries
+        # dbghelp.lib is for symbol resolution in native unwinding
+        EXTRA_LINK_ARGS = ["dbghelp.lib"]
     else:
         EXTRA_COMPILE_ARGS = [
             "-O2",
@@ -206,9 +215,12 @@ def get_extension():
         
         # Position-independent code for shared library
         EXTRA_COMPILE_ARGS.append("-fPIC")
+        
+        # Initialize link args for POSIX platforms
+        EXTRA_LINK_ARGS = []
     
     if IS_LINUX:
-        EXTRA_LINK_ARGS = ["-lrt", "-ldl", "-lpthread"]
+        EXTRA_LINK_ARGS.extend(["-lrt", "-ldl", "-lpthread"])
         
         # Check for libunwind
         try:
@@ -225,7 +237,7 @@ def get_extension():
             pass
     
     elif IS_MACOS:
-        EXTRA_LINK_ARGS = ["-framework", "CoreFoundation"]
+        EXTRA_LINK_ARGS.extend(["-framework", "CoreFoundation"])
         EXTRA_COMPILE_ARGS.extend([
             "-mmacosx-version-min=10.15",
         ])

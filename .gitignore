@@ -33,6 +33,7 @@ MANIFEST
 
 # Virtual environments
 .venv/
+.venvs/
 venv/
 ENV/
 env/
@@ -51,6 +52,8 @@ env/
 
 # Testing
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .coverage
 coverage.xml
 htmlcov/

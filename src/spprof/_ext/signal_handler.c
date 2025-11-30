@@ -16,9 +16,15 @@
  *                            v
  *                   [Consumer thread resolves symbols]
  *
+ * NOTE: This file is only compiled on POSIX systems (Linux, macOS).
+ * Windows has its own implementation in platform/windows.c.
+ *
  * Copyright (c) 2024 spprof contributors
  * SPDX-License-Identifier: MIT
  */
+
+/* Windows uses its own implementation in platform/windows.c */
+#ifndef _WIN32
 
 #define _GNU_SOURCE
 #include <Python.h>
@@ -387,4 +393,6 @@ void signal_handler_debug_info(void) {
 }
 
 #endif /* SPPROF_DEBUG */
+
+#endif /* !_WIN32 */
 
