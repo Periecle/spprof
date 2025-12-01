@@ -83,6 +83,101 @@ class ProfilerStats:
     overhead_estimate_pct: float
 
 
+@dataclass(frozen=True)
+class StackTrace:
+    """A unique call stack with frame tuple."""
+
+    frames: tuple[Frame, ...]  # Immutable tuple for hashing
+    thread_id: int
+    thread_name: str | None = None
+
+    def __hash__(self) -> int:
+        return hash((self.frames, self.thread_id))
+
+
+@dataclass
+class AggregatedStack:
+    """A call stack with its occurrence count."""
+
+    frames: Sequence[Frame]
+    thread_id: int
+    thread_name: str | None
+    count: int  # Number of times this exact stack was sampled
+
+
+@dataclass
+class AggregatedProfile:
+    """Memory-efficient profile with aggregated identical stacks.
+
+    For long-running profiles, many samples have identical stacks.
+    This class stores unique stacks with counts instead of individual samples,
+    reducing memory usage significantly.
+
+    Example:
+        >>> profile = spprof.stop()
+        >>> agg = profile.aggregate()
+        >>> print(f"Reduced {profile.sample_count} samples to {len(agg.stacks)} unique stacks")
+        >>> agg.save("profile.json")  # Works with same output formats
+    """
+
+    start_time: datetime
+    end_time: datetime
+    interval_ms: int
+    stacks: list[AggregatedStack]  # Unique stacks with counts
+    total_samples: int  # Original sample count
+    dropped_count: int
+    python_version: str
+    platform: str
+
+    @property
+    def unique_stack_count(self) -> int:
+        """Number of unique stacks."""
+        return len(self.stacks)
+
+    @property
+    def compression_ratio(self) -> float:
+        """Ratio of original samples to unique stacks (higher = more compression)."""
+        if self.unique_stack_count == 0:
+            return 1.0
+        return self.total_samples / self.unique_stack_count
+
+    @property
+    def memory_reduction_pct(self) -> float:
+        """Estimated memory reduction percentage."""
+        if self.total_samples == 0:
+            return 0.0
+        return (1.0 - (self.unique_stack_count / self.total_samples)) * 100
+
+    def to_speedscope(self) -> dict[str, Any]:
+        """Convert to Speedscope JSON format."""
+        from spprof.output import aggregated_to_speedscope
+
+        return aggregated_to_speedscope(self)
+
+    def to_collapsed(self) -> str:
+        """Convert to collapsed stack format (for FlameGraph)."""
+        from spprof.output import aggregated_to_collapsed
+
+        return aggregated_to_collapsed(self)
+
+    def save(
+        self, path: Path | str, format: Literal["speedscope", "collapsed"] = "speedscope"
+    ) -> None:
+        """Save aggregated profile to file."""
+        import json
+
+        output_path = Path(path)
+
+        if format == "speedscope":
+            speedscope_data = self.to_speedscope()
+            output_path.write_text(json.dumps(speedscope_data, indent=2))
+        elif format == "collapsed":
+            collapsed_data = self.to_collapsed()
+            output_path.write_text(collapsed_data)
+        else:
+            raise ValueError(f"Unknown format: {format}")
+
+
 @dataclass
 class Profile:
     """Result of a profiling session."""
@@ -113,6 +208,58 @@ class Profile:
         if duration_s <= 0:
             return 0.0
         return self.sample_count / duration_s
+
+    def aggregate(self) -> AggregatedProfile:
+        """Aggregate identical stacks to reduce memory usage.
+
+        For long-running profiles, many samples have identical stacks.
+        This method returns an AggregatedProfile that stores unique stacks
+        with occurrence counts instead of individual samples.
+
+        Returns:
+            AggregatedProfile with unique stacks and counts.
+
+        Example:
+            >>> profile = spprof.stop()
+            >>> agg = profile.aggregate()
+            >>> print(f"Compression: {agg.compression_ratio:.1f}x")
+            >>> print(f"Memory reduction: {agg.memory_reduction_pct:.1f}%")
+        """
+        from collections import Counter
+
+        # Count unique stacks
+        stack_counter: Counter[StackTrace] = Counter()
+
+        for sample in self.samples:
+            # Convert frames list to immutable tuple for hashing
+            stack = StackTrace(
+                frames=tuple(sample.frames),
+                thread_id=sample.thread_id,
+                thread_name=sample.thread_name,
+            )
+            stack_counter[stack] += 1
+
+        # Convert to AggregatedStack list
+        aggregated_stacks = [
+            AggregatedStack(
+                frames=list(stack.frames),
+                thread_id=stack.thread_id,
+                thread_name=stack.thread_name,
+                count=count,
+            )
+            for stack, count in stack_counter.items()
+        ]
+
+        return AggregatedProfile(
+            start_time=self.start_time,
+            end_time=self.end_time,
+            interval_ms=self.interval_ms,
+            stacks=aggregated_stacks,
+            total_samples=self.sample_count,
+            dropped_count=self.dropped_count,
+            python_version=self.python_version,
+            platform=self.platform,
+        )
 
     def to_speedscope(self) -> dict[str, Any]:
         """Convert to Speedscope JSON format."""
@@ -238,9 +385,31 @@ def stop() -> Profile:
         end_time = datetime.now()
 
         if _HAS_NATIVE:
-            raw_samples = _native._stop()
-            samples = _convert_raw_samples(raw_samples)
-            dropped_count = 0  # TODO: Get from native
+            # Get final stats before stopping (includes dropped_samples)
+            final_stats = _native._get_stats()
+            dropped_count = final_stats.get("dropped_samples", 0) if final_stats else 0
+            
+            # Use streaming API to avoid OOM for long profiling sessions
+            # Stop the timer first, then drain in chunks
+            if hasattr(_native, "_stop_timer") and hasattr(_native, "_drain_buffer"):
+                _native._stop_timer()
+                
+                # Drain samples in chunks to avoid memory spike
+                all_raw_samples: list[dict[str, Any]] = []
+                batch_size = 10000  # Process 10k samples at a time
+                
+                while True:
+                    batch, has_more = _native._drain_buffer(batch_size)
+                    all_raw_samples.extend(batch)
+                    if not has_more:
+                        break
+                
+                _native._finalize_stop()
+                samples = _convert_raw_samples(all_raw_samples)
+            else:
+                # Fallback to legacy API for older native modules
+                raw_samples = _native._stop()
+                samples = _convert_raw_samples(raw_samples)
         else:
             samples = _samples
             dropped_count = 0
@@ -289,11 +458,23 @@ def stats() -> ProfilerStats | None:
 
     if _HAS_NATIVE:
         raw_stats = _native._get_stats()
+        collected = raw_stats.get("collected_samples", 0)
+        duration_ms = raw_stats.get("duration_ns", 0) / 1_000_000
+        
+        # Estimate overhead: (samples * avg_handler_time_us) / duration
+        # Using 25μs per sample as conservative estimate (includes frame walking,
+        # ring buffer write, and signal dispatch overhead)
+        avg_handler_time_ms = 0.025  # 25 microseconds in milliseconds
+        if duration_ms > 0:
+            overhead_estimate_pct = (collected * avg_handler_time_ms) / duration_ms * 100
+        else:
+            overhead_estimate_pct = 0.0
+        
         return ProfilerStats(
-            collected_samples=raw_stats.get("collected_samples", 0),
+            collected_samples=collected,
             dropped_samples=raw_stats.get("dropped_samples", 0),
-            duration_ms=raw_stats.get("duration_ns", 0) / 1_000_000,
-            overhead_estimate_pct=0.0,  # TODO: Calculate
+            duration_ms=duration_ms,
+            overhead_estimate_pct=overhead_estimate_pct,
         )
 
     return ProfilerStats(
@@ -629,6 +810,8 @@ def _get_thread_names() -> dict[int, str]:
 
 __all__ = [
     # Data classes
+    "AggregatedProfile",
+    "AggregatedStack",
     "Frame",
     "NativeFrame",
     "Profile",
@@ -636,6 +819,7 @@ __all__ = [
     "Profiler",
     "ProfilerStats",
     "Sample",
+    "StackTrace",
     "ThreadProfiler",
     "__version__",
     "capture_native_stack",

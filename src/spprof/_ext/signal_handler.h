@@ -101,6 +101,73 @@ uint64_t signal_handler_samples_dropped(void);
  */
 uint64_t signal_handler_errors(void);
 
+/**
+ * Check if we're currently executing in signal handler context.
+ *
+ * This is used by debug assertions to enforce the invariant that
+ * certain operations (like acquiring mutex/rwlock) must never occur
+ * from signal context, as this can cause deadlocks.
+ *
+ * ASYNC-SIGNAL-SAFE: Yes (reads volatile sig_atomic_t).
+ *
+ * @return 1 if in signal handler, 0 otherwise
+ */
+int signal_handler_in_context(void);
+
+/*
+ * =============================================================================
+ * Signal Context Assertions
+ * =============================================================================
+ *
+ * CRITICAL INVARIANT: Lock-based operations must NEVER be called from signal
+ * handler context. Violating this invariant causes deadlock:
+ *
+ *   1. Thread A holds lock L
+ *   2. Signal interrupts Thread A
+ *   3. Signal handler tries to acquire lock L
+ *   4. DEADLOCK: handler waits for lock, but lock holder is blocked in handler
+ *
+ * Use SPPROF_ASSERT_NOT_IN_SIGNAL() in debug builds to catch violations early.
+ *
+ * Functions that MUST use this assertion:
+ *   - registry_* functions in linux.c (use pthread_rwlock_t)
+ *   - Any function that acquires pthread_mutex_t or pthread_rwlock_t
+ *   - Any function that calls malloc/free (not async-signal-safe)
+ */
+
+#ifdef SPPROF_DEBUG
+#include <stdio.h>
+#include <stdlib.h>
+
+/**
+ * Assert that we are NOT in signal handler context.
+ *
+ * In debug builds, this aborts with a diagnostic message if called from
+ * within a signal handler. In release builds, this is a no-op.
+ *
+ * Usage:
+ *   void my_function_with_lock(void) {
+ *       SPPROF_ASSERT_NOT_IN_SIGNAL("my_function_with_lock");
+ *       pthread_mutex_lock(&my_lock);
+ *       ...
+ *   }
+ */
+#define SPPROF_ASSERT_NOT_IN_SIGNAL(func_name) \
+    do { \
+        if (signal_handler_in_context()) { \
+            fprintf(stderr, \
+                "[spprof] FATAL: %s called from signal handler context!\n" \
+                "This will cause deadlock. Fix the calling code.\n", \
+                (func_name)); \
+            abort(); \
+        } \
+    } while (0)
+
+#else
+/* Release build: no-op */
+#define SPPROF_ASSERT_NOT_IN_SIGNAL(func_name) ((void)0)
+#endif
+
 
 #ifdef SPPROF_DEBUG
 /**

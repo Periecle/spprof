@@ -5,6 +5,11 @@
  * the signal handler (producer) and the resolver thread (consumer).
  *
  * CRITICAL: ringbuffer_write() MUST be async-signal-safe.
+ *
+ * PLATFORM REQUIREMENTS:
+ *   - Windows: Windows 8 / Windows Server 2012 or later (uses Win8+ SDK intrinsics)
+ *   - macOS: macOS 10.15 (Catalina) or later
+ *   - Linux: Kernel 2.6.12+ with POSIX timers
  */
 
 #ifndef SPPROF_RINGBUFFER_H
@@ -16,7 +21,13 @@
 /* Platform-specific atomic types and operations */
 #ifdef _WIN32
 #include <windows.h>
-/* Windows uses Interlocked functions - defined in ringbuffer.c */
+/*
+ * Windows 8+ SDK intrinsics used in ringbuffer.c:
+ *   - ReadNoFence64, WriteNoFence64 (relaxed)
+ *   - ReadAcquire64, WriteRelease64 (acquire/release)
+ *   - InterlockedExchangeAdd64 (atomic RMW)
+ * These are declared in <winnt.h> (included via <windows.h>).
+ */
 typedef volatile LONGLONG ATOMIC_UINT64;
 #else
 #include <stdatomic.h>
@@ -43,14 +54,21 @@ typedef struct {
  *
  * Contains only raw pointers and integers - no strings or Python objects.
  * This struct is fixed-size to enable pre-allocation.
+ *
+ * For mixed-mode profiling, we capture both:
+ *   - Python frames (PyCodeObject* pointers + instruction pointers)
+ *   - Native frames (raw PC addresses from frame pointer walk)
+ *
+ * Symbol resolution happens later in the resolver to avoid loader lock.
  */
 typedef struct {
     uint64_t timestamp;                          /* Monotonic clock value (nanoseconds) */
     uint64_t thread_id;                          /* OS thread ID */
-    int depth;                                   /* Number of valid frame pointers */
-    int _padding;                                /* Alignment padding */
+    int depth;                                   /* Number of valid Python frames */
+    int native_depth;                            /* Number of valid native frames */
     uintptr_t frames[SPPROF_MAX_STACK_DEPTH];   /* Raw PyCodeObject* pointers (unresolved) */
     uintptr_t instr_ptrs[SPPROF_MAX_STACK_DEPTH]; /* Instruction pointers for line resolution */
+    uintptr_t native_pcs[SPPROF_MAX_STACK_DEPTH]; /* Native PC addresses (resolved via dladdr) */
 } RawSample;
 
 /**

@@ -133,17 +133,11 @@ def get_extension():
         str(SRC_DIR / "ringbuffer.c"),
         str(SRC_DIR / "resolver.c"),
         str(SRC_DIR / "unwind.c"),
+        str(SRC_DIR / "code_registry.c"),  # Safe code object reference tracking
     ]
 
-    # Add appropriate framewalker source
-    if use_internal_api:
-        fw_source = SRC_DIR / "framewalker_internal.c"
-        if fw_source.exists():
-            SOURCES.append(str(fw_source))
-        else:
-            SOURCES.append(str(SRC_DIR / "framewalker.c"))
-    else:
-        SOURCES.append(str(SRC_DIR / "framewalker.c"))
+    # Add unified framewalker source (handles both internal and public API via #ifdef)
+    SOURCES.append(str(SRC_DIR / "framewalker.c"))
 
     # Add signal handler
     signal_handler = SRC_DIR / "signal_handler.c"
@@ -153,18 +147,33 @@ def get_extension():
     # Platform-specific sources
     if IS_LINUX:
         platform_src = SRC_DIR / "platform" / "linux.c"
+        if platform_src.exists():
+            SOURCES.append(str(platform_src))
+        else:
+            print(f"[spprof] Platform source not found: {platform_src}")
     elif IS_MACOS:
         platform_src = SRC_DIR / "platform" / "darwin.c"
+        if platform_src.exists():
+            SOURCES.append(str(platform_src))
+        else:
+            print(f"[spprof] Platform source not found: {platform_src}")
+        
+        # Add Mach-based sampler for Darwin
+        mach_src = SRC_DIR / "platform" / "darwin_mach.c"
+        if mach_src.exists():
+            SOURCES.append(str(mach_src))
+            print("[spprof] Darwin: Using Mach-based sampler for multi-thread support")
+        else:
+            print(f"[spprof] Mach sampler source not found: {mach_src}")
     elif IS_WINDOWS:
         platform_src = SRC_DIR / "platform" / "windows.c"
+        if platform_src.exists():
+            SOURCES.append(str(platform_src))
+        else:
+            print(f"[spprof] Platform source not found: {platform_src}")
     else:
         print(f"[spprof] Unsupported platform: {platform.system()}")
         return None
-
-    if platform_src.exists():
-        SOURCES.append(str(platform_src))
-    else:
-        print(f"[spprof] Platform source not found: {platform_src}")
 
     # Verify all sources exist
     for src in SOURCES:

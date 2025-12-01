@@ -30,6 +30,15 @@
 #include "unwind.h"
 #include "platform/platform.h"
 #include "signal_handler.h"
+#include "code_registry.h"
+
+/*
+ * Include internal headers for free-threading detection.
+ * The SPPROF_FREE_THREADING_SAFE macro is defined in pycore_frame.h.
+ */
+#ifdef SPPROF_USE_INTERNAL_API
+#include "internal/pycore_frame.h"
+#endif
 
 /* Global state - exposed for platform signal handlers */
 /* Must be visible for signal_handler.c to access via extern */
@@ -57,6 +66,31 @@ static PyObject* spprof_start(PyObject* self, PyObject* args, PyObject* kwargs) 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|K", kwlist, &interval_ns)) {
         return NULL;
     }
+
+    /*
+     * FREE-THREADING SAFETY CHECK
+     *
+     * On free-threaded Python builds (Py_GIL_DISABLED), signal-based sampling
+     * is unsafe because the GIL is not there to protect frame chain consistency.
+     *
+     * Darwin/macOS uses Mach-based sampling (thread suspension) which IS safe.
+     * Linux/other platforms use SIGPROF which is NOT safe for free-threading.
+     *
+     * We check SPPROF_FREE_THREADING_SAFE at compile time and fail early
+     * with a clear error message if the configuration is unsafe.
+     */
+#ifdef SPPROF_USE_INTERNAL_API
+#if !SPPROF_FREE_THREADING_SAFE
+    PyErr_SetString(PyExc_RuntimeError,
+        "spprof is not supported on free-threaded Python builds on this platform. "
+        "Free-threaded Python (--disable-gil) removes the GIL, making signal-based "
+        "sampling unsafe because frame chains can be modified concurrently. "
+        "On macOS, the Mach sampler is used instead and IS safe. "
+        "On Linux, consider using alternative profilers like py-spy or scalene."
+    );
+    return NULL;
+#endif
+#endif
 
     /* Check if already running (atomic read) */
     if (ATOMIC_LOAD(&g_is_active)) {
@@ -102,7 +136,42 @@ static PyObject* spprof_start(PyObject* self, PyObject* args, PyObject* kwargs) 
 }
 
 /**
- * _stop() - Stop profiling and return raw samples
+ * _stop_timer() - Stop the profiling timer without draining samples
+ *
+ * Internal function for streaming API. Stops sampling but leaves samples
+ * in the buffer for chunked retrieval via _drain_buffer().
+ *
+ * Use this with _drain_buffer() for memory-efficient streaming of large profiles.
+ */
+static PyObject* spprof_stop_timer(PyObject* self, PyObject* args) {
+    if (!ATOMIC_LOAD(&g_is_active)) {
+        PyErr_SetString(PyExc_RuntimeError, "Profiler not running");
+        return NULL;
+    }
+
+    /* Stop the timer */
+    platform_timer_destroy();
+    ATOMIC_STORE(&g_is_active, 0);
+
+    Py_RETURN_NONE;
+}
+
+/**
+ * _finalize_stop() - Clean up after draining all samples
+ *
+ * Call this after using _stop_timer() and _drain_buffer() to clean up
+ * the resolver state.
+ */
+static PyObject* spprof_finalize_stop(PyObject* self, PyObject* args) {
+    resolver_shutdown();
+    Py_RETURN_NONE;
+}
+
+/**
+ * _stop() - Stop profiling and return raw samples (legacy API)
+ *
+ * WARNING: For long profiling sessions with millions of samples, this can
+ * cause OOM. Use _stop_timer() + _drain_buffer() + _finalize_stop() instead.
  *
  * Internal function. Use spprof.stop() from Python.
  *
@@ -217,6 +286,7 @@ static PyObject* spprof_is_active(PyObject* self, PyObject* args) {
  *   - 'dropped_samples': int
  *   - 'duration_ns': int
  *   - 'interval_ns': int
+ *   - 'safe_mode_rejects': int (samples discarded due to safe mode)
  */
 static PyObject* spprof_get_stats(PyObject* self, PyObject* args) {
     int is_active = ATOMIC_LOAD(&g_is_active);
@@ -230,12 +300,17 @@ static PyObject* spprof_get_stats(PyObject* self, PyObject* args) {
 
     uint64_t collected = signal_handler_samples_captured();
     
+    /* Get safe mode rejection count from code registry */
+    uint64_t safe_mode_rejects = 0;
+    code_registry_get_stats_extended(NULL, NULL, NULL, NULL, NULL, &safe_mode_rejects);
+    
     return Py_BuildValue(
-        "{s:K, s:K, s:K, s:K}",
+        "{s:K, s:K, s:K, s:K, s:K}",
         "collected_samples", collected,
         "dropped_samples", dropped,
         "duration_ns", duration_ns,
-        "interval_ns", g_interval_ns
+        "interval_ns", g_interval_ns,
+        "safe_mode_rejects", safe_mode_rejects
     );
 }
 
@@ -321,6 +396,104 @@ static PyObject* spprof_native_unwinding_enabled(PyObject* self, PyObject* args)
 }
 
 /**
+ * _drain_buffer(max_samples) - Drain samples from buffer in chunks (streaming API)
+ *
+ * This allows retrieving samples in chunks without loading all into memory,
+ * preventing OOM for long profiling sessions.
+ *
+ * Args:
+ *   max_samples: Maximum number of samples to retrieve (default 10000)
+ *
+ * Returns:
+ *   Tuple of (samples_list, has_more) where samples_list is a list of sample dicts
+ *   and has_more is True if more samples are available.
+ */
+static PyObject* spprof_drain_buffer(PyObject* self, PyObject* args) {
+    size_t max_samples = 10000;  /* Default batch size */
+
+    if (!PyArg_ParseTuple(args, "|n", &max_samples)) {
+        return NULL;
+    }
+
+    ResolvedSample* samples = NULL;
+    size_t count = 0;
+
+    if (resolver_drain_samples(max_samples, &samples, &count) < 0) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to drain samples from buffer");
+        return NULL;
+    }
+
+    /* Convert to Python list */
+    PyObject* result_list = PyList_New((Py_ssize_t)count);
+    if (result_list == NULL) {
+        if (samples) free(samples);
+        return NULL;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        ResolvedSample* sample = &samples[i];
+
+        /* Create frames list */
+        PyObject* frames_list = PyList_New(sample->depth);
+        if (frames_list == NULL) {
+            Py_DECREF(result_list);
+            if (samples) free(samples);
+            return NULL;
+        }
+
+        for (int j = 0; j < sample->depth; j++) {
+            ResolvedFrame* frame = &sample->frames[j];
+
+            PyObject* frame_dict = Py_BuildValue(
+                "{s:s, s:s, s:i, s:O}",
+                "function", frame->function_name,
+                "filename", frame->filename,
+                "lineno", frame->lineno,
+                "is_native", frame->is_native ? Py_True : Py_False
+            );
+
+            if (frame_dict == NULL) {
+                Py_DECREF(frames_list);
+                Py_DECREF(result_list);
+                if (samples) free(samples);
+                return NULL;
+            }
+
+            PyList_SET_ITEM(frames_list, j, frame_dict);
+        }
+
+        /* Create sample dict */
+        PyObject* sample_dict = Py_BuildValue(
+            "{s:K, s:K, s:O}",
+            "timestamp", sample->timestamp,
+            "thread_id", sample->thread_id,
+            "frames", frames_list
+        );
+
+        Py_DECREF(frames_list);
+
+        if (sample_dict == NULL) {
+            Py_DECREF(result_list);
+            if (samples) free(samples);
+            return NULL;
+        }
+
+        PyList_SET_ITEM(result_list, (Py_ssize_t)i, sample_dict);
+    }
+
+    /* Free the samples array (caller owns it from resolver_drain_samples) */
+    if (samples) {
+        free(samples);
+    }
+
+    /* Check if more samples are available */
+    int has_more = resolver_has_pending_samples();
+
+    /* Return tuple of (samples_list, has_more) */
+    return Py_BuildValue("(Oi)", result_list, has_more);
+}
+
+/**
  * _capture_native_stack() - Capture current native stack (for testing)
  *
  * Returns a list of dicts with native frame info.
@@ -368,12 +541,88 @@ static PyObject* spprof_capture_native_stack(PyObject* self, PyObject* args) {
     return result;
 }
 
+/**
+ * _set_safe_mode(enabled) - Enable or disable safe mode for code validation
+ *
+ * When safe mode is enabled, code objects that were captured without holding
+ * a reference (e.g., signal-handler captured samples on Linux) will be
+ * discarded rather than validated via PyCode_Check.
+ *
+ * This trades sample completeness for guaranteed memory safety in production
+ * environments where the tiny theoretical risk of accessing freed memory
+ * is unacceptable.
+ *
+ * Note: Darwin/Mach samples are always safe (INCREF'd during capture).
+ * Safe mode only affects Linux signal-handler samples.
+ */
+static PyObject* spprof_set_safe_mode(PyObject* self, PyObject* args) {
+    int enabled;
+
+    if (!PyArg_ParseTuple(args, "p", &enabled)) {
+        return NULL;
+    }
+
+    code_registry_set_safe_mode(enabled);
+    Py_RETURN_NONE;
+}
+
+/**
+ * _is_safe_mode() - Check if safe mode is enabled
+ */
+static PyObject* spprof_is_safe_mode(PyObject* self, PyObject* args) {
+    if (code_registry_is_safe_mode()) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+
+/**
+ * _get_code_registry_stats() - Get code registry statistics
+ *
+ * Returns a dict with detailed code registry statistics including
+ * safe mode rejection count.
+ */
+static PyObject* spprof_get_code_registry_stats(PyObject* self, PyObject* args) {
+    uint64_t refs_held = 0;
+    uint64_t refs_added = 0;
+    uint64_t refs_released = 0;
+    uint64_t validations = 0;
+    uint64_t invalid_count = 0;
+    uint64_t safe_mode_rejects = 0;
+
+    code_registry_get_stats_extended(
+        &refs_held,
+        &refs_added,
+        &refs_released,
+        &validations,
+        &invalid_count,
+        &safe_mode_rejects
+    );
+
+    return Py_BuildValue(
+        "{s:K, s:K, s:K, s:K, s:K, s:K, s:O}",
+        "refs_held", refs_held,
+        "refs_added", refs_added,
+        "refs_released", refs_released,
+        "validations", validations,
+        "invalid_count", invalid_count,
+        "safe_mode_rejects", safe_mode_rejects,
+        "safe_mode_enabled", code_registry_is_safe_mode() ? Py_True : Py_False
+    );
+}
+
 /* Method table */
 static PyMethodDef SpProfMethods[] = {
     {"_start", (PyCFunction)spprof_start, METH_VARARGS | METH_KEYWORDS,
      "Start profiling (internal). Use spprof.start() instead."},
     {"_stop", spprof_stop, METH_NOARGS,
-     "Stop profiling and return raw samples (internal)."},
+     "Stop profiling and return raw samples (internal, legacy API)."},
+    {"_stop_timer", spprof_stop_timer, METH_NOARGS,
+     "Stop the profiling timer without draining samples (streaming API)."},
+    {"_finalize_stop", spprof_finalize_stop, METH_NOARGS,
+     "Clean up resolver after streaming drain is complete."},
+    {"_drain_buffer", spprof_drain_buffer, METH_VARARGS,
+     "Drain samples from buffer in chunks (streaming API). Returns (samples, has_more)."},
     {"_is_active", spprof_is_active, METH_NOARGS,
      "Check if profiling is active."},
     {"_get_stats", spprof_get_stats, METH_NOARGS,
@@ -390,6 +639,12 @@ static PyMethodDef SpProfMethods[] = {
      "Check if native unwinding is currently enabled."},
     {"_capture_native_stack", spprof_capture_native_stack, METH_NOARGS,
      "Capture current native stack (for testing)."},
+    {"_set_safe_mode", spprof_set_safe_mode, METH_VARARGS,
+     "Enable or disable safe mode for code validation."},
+    {"_is_safe_mode", spprof_is_safe_mode, METH_NOARGS,
+     "Check if safe mode is enabled."},
+    {"_get_code_registry_stats", spprof_get_code_registry_stats, METH_NOARGS,
+     "Get code registry statistics including safe mode rejects."},
     {NULL, NULL, 0, NULL}
 };
 
@@ -501,6 +756,47 @@ PyMODINIT_FUNC PyInit__native(void) {
         Py_DECREF(module);
         return NULL;
     }
+
+    /*
+     * Add free-threading support information.
+     * This allows Python code to check if the profiler is safe to use.
+     */
+#ifdef Py_GIL_DISABLED
+    if (PyModule_AddIntConstant(module, "free_threaded_build", 1) < 0) {
+        platform_cleanup();
+        Py_DECREF(module);
+        return NULL;
+    }
+#else
+    if (PyModule_AddIntConstant(module, "free_threaded_build", 0) < 0) {
+        platform_cleanup();
+        Py_DECREF(module);
+        return NULL;
+    }
+#endif
+
+#ifdef SPPROF_USE_INTERNAL_API
+    #if SPPROF_FREE_THREADING_SAFE
+    if (PyModule_AddIntConstant(module, "free_threading_safe", 1) < 0) {
+        platform_cleanup();
+        Py_DECREF(module);
+        return NULL;
+    }
+    #else
+    if (PyModule_AddIntConstant(module, "free_threading_safe", 0) < 0) {
+        platform_cleanup();
+        Py_DECREF(module);
+        return NULL;
+    }
+    #endif
+#else
+    /* Without internal API, we're not using signal-based sampling in production */
+    if (PyModule_AddIntConstant(module, "free_threading_safe", 1) < 0) {
+        platform_cleanup();
+        Py_DECREF(module);
+        return NULL;
+    }
+#endif
 
     return module;
 }

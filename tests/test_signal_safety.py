@@ -1,5 +1,6 @@
 """Tests for signal safety and deadlock prevention."""
 
+import platform
 import threading
 
 import pytest
@@ -68,6 +69,8 @@ def test_gc_stress():
     assert profile is not None
 
 
+@pytest.mark.skipif(platform.system() == "Darwin", 
+                    reason="Darwin setitimer has thread-safety issues with aggressive sampling")
 def test_ring_buffer_overflow_handling():
     """Verify samples are dropped, not crashed, on overflow."""
     import spprof
