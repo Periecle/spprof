@@ -168,6 +168,69 @@ Benefits:
 - Each thread gets its own timer
 - True per-thread CPU profiling
 
+**Thread Registry (Dynamic Thread Tracking)**
+
+The Linux implementation uses a hash table (uthash) for dynamic thread tracking:
+
+```c
+typedef struct ThreadTimerEntry {
+    pid_t tid;              // Key: Linux thread ID
+    timer_t timer_id;       // POSIX timer handle
+    uint64_t overruns;      // Accumulated timer overruns
+    int active;             // Timer running state
+    UT_hash_handle hh;      // uthash handle
+} ThreadTimerEntry;
+```
+
+Key features:
+- **No thread limits**: Dynamic growth replaces the old 256-thread limit
+- **O(1) operations**: Hash table provides constant-time lookup
+- **RWLock protection**: Concurrent reads during profiling, serialized writes
+- **Overrun tracking**: Per-thread overrun counts aggregated globally
+- **Race-free shutdown**: Signal blocking during cleanup prevents crashes
+
+Thread registry operations:
+| Operation | Complexity | Thread Safety |
+|-----------|------------|---------------|
+| `registry_add_thread` | O(1) avg | Write lock |
+| `registry_find_thread` | O(1) avg | Read lock |
+| `registry_remove_thread` | O(1) avg | Write lock |
+| `registry_count` | O(1) | Read lock |
+
+**Timer Cleanup**
+
+Safe timer deletion uses signal blocking:
+
+```c
+// Block SIGPROF to prevent races
+sigset_t block_set;
+sigemptyset(&block_set);
+sigaddset(&block_set, SIGPROF);
+pthread_sigmask(SIG_BLOCK, &block_set, &old_set);
+
+// Delete timer safely
+timer_delete(timer_id);
+
+// Drain pending signals
+while (sigtimedwait(&block_set, &info, &timeout) > 0) {}
+
+// Restore signal mask
+pthread_sigmask(SIG_SETMASK, &old_set, NULL);
+```
+
+**Pause/Resume Support**
+
+Timers can be paused without destruction:
+
+```c
+// Pause: Set zero interval (disarm)
+struct itimerspec zero = {0};
+timer_settime(timer_id, 0, &zero, NULL);
+
+// Resume: Restore saved interval
+timer_settime(timer_id, 0, &saved_interval, NULL);
+```
+
 #### macOS (`darwin.c`)
 
 Uses `setitimer(ITIMER_PROF)`:

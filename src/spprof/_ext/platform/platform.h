@@ -98,6 +98,26 @@ int platform_timer_create(uint64_t interval_ns);
 int platform_timer_destroy(void);
 
 /**
+ * Pause all profiling timers.
+ *
+ * Disarms timers by setting zero interval. Timers remain allocated.
+ * On platforms that don't support this, returns 0 (no-op).
+ *
+ * @return 0 on success, -1 on error
+ */
+int platform_timer_pause(void);
+
+/**
+ * Resume all paused profiling timers.
+ *
+ * Restores saved interval to all timers.
+ * On platforms that don't support this, returns 0 (no-op).
+ *
+ * @return 0 on success, -1 on error
+ */
+int platform_timer_resume(void);
+
+/**
  * Register a thread for per-thread sampling.
  *
  * On Linux with timer_create/SIGEV_THREAD_ID, each thread needs
@@ -189,6 +209,33 @@ void platform_get_stats(
     uint64_t* samples_dropped,
     uint64_t* timer_overruns
 );
+
+/*
+ * =============================================================================
+ * Linux-Specific Extensions
+ * =============================================================================
+ */
+
+#ifdef SPPROF_PLATFORM_LINUX
+
+/**
+ * Get extended Linux-specific statistics.
+ *
+ * @param samples_captured Output: number of samples captured
+ * @param samples_dropped Output: number of samples dropped
+ * @param timer_overruns Output: total timer overruns
+ * @param timer_create_failures Output: failed timer_create() calls
+ * @param registered_threads Output: number of registered threads
+ */
+void platform_get_extended_stats(
+    uint64_t* samples_captured,
+    uint64_t* samples_dropped,
+    uint64_t* timer_overruns,
+    uint64_t* timer_create_failures,
+    uint64_t* registered_threads
+);
+
+#endif /* SPPROF_PLATFORM_LINUX */
 
 /*
  * =============================================================================
