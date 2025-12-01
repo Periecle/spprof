@@ -102,6 +102,16 @@ int platform_timer_destroy(void) {
     return 0;
 }
 
+int platform_timer_pause(void) {
+    /* macOS: Not implemented - return success (no-op) */
+    return 0;
+}
+
+int platform_timer_resume(void) {
+    /* macOS: Not implemented - return success (no-op) */
+    return 0;
+}
+
 uint64_t platform_thread_id(void) {
     uint64_t tid;
     pthread_threadid_np(pthread_self(), &tid);

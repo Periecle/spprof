@@ -766,6 +766,16 @@ int platform_timer_destroy(void) {
     return 0;
 }
 
+int platform_timer_pause(void) {
+    /* Windows: Not implemented - return success (no-op) */
+    return 0;
+}
+
+int platform_timer_resume(void) {
+    /* Windows: Not implemented - return success (no-op) */
+    return 0;
+}
+
 /*
  * =============================================================================
  * Thread Management

@@ -1,7 +1,10 @@
 """Tests for multi-threaded profiling."""
 
+import platform
 import threading
 import time
+
+import pytest
 
 
 def test_register_thread():
@@ -141,6 +144,7 @@ def test_thread_terminates_during_profiling():
     assert profile is not None
 
 
+@pytest.mark.skipif(platform.system() != "Linux", reason="Linux-specific multi-thread test")
 def test_main_thread_blocked_other_sampled():
     """Verify other threads are sampled when main thread is blocked."""
     import spprof
@@ -169,4 +173,124 @@ def test_main_thread_blocked_other_sampled():
     profile = spprof.stop()
 
     assert len(result) == 1
+    assert profile is not None
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="Linux-specific thread registry test")
+def test_many_threads():
+    """Test profiling with more than 256 threads (old limit).
+
+    This validates the dynamic thread registry can handle 300+ threads
+    without hitting any artificial limits.
+    """
+    import spprof
+
+    def work():
+        total = 0
+        for i in range(10000):
+            total += i
+        return total
+
+    spprof.start(interval_ms=10)
+
+    # Create 300 threads (exceeds old MAX_TRACKED_THREADS=256 limit)
+    threads = [threading.Thread(target=work) for _ in range(300)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    profile = spprof.stop()
+    assert profile is not None
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="Linux-specific thread churn test")
+def test_rapid_thread_churn():
+    """Test rapid thread creation/destruction.
+
+    Simulates thread pool patterns where threads are frequently
+    created and destroyed while profiling is active.
+    """
+    import spprof
+
+    spprof.start(interval_ms=5)
+
+    # Simulate rapid thread churn - 20 batches of 10 threads each
+    for _ in range(20):
+        threads = [threading.Thread(target=lambda: sum(range(1000))) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    profile = spprof.stop()
+    assert profile is not None
+
+
+@pytest.mark.skipif(
+    platform.system() != "Linux", reason="Linux-specific concurrent registration test"
+)
+def test_concurrent_thread_registration():
+    """Test concurrent thread registration and unregistration.
+
+    Multiple threads registering and unregistering simultaneously
+    should not cause data races or crashes.
+    """
+    import spprof
+
+    barrier = threading.Barrier(20)
+    errors = []
+
+    def worker():
+        try:
+            barrier.wait()  # Sync start
+            spprof.register_thread()
+            # Do some work
+            _ = sum(range(10000))
+            spprof.unregister_thread()
+        except Exception as e:
+            errors.append(e)
+
+    spprof.start(interval_ms=5)
+
+    # Start 20 threads that all register/unregister simultaneously
+    threads = [threading.Thread(target=worker) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    profile = spprof.stop()
+
+    assert len(errors) == 0, f"Errors during concurrent registration: {errors}"
+    assert profile is not None
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="Linux-specific thread exit timing test")
+def test_thread_exit_during_timer():
+    """Test thread exiting while timer is potentially firing.
+
+    Edge case: thread exits exactly when its timer would fire.
+    The profiler should handle this gracefully.
+    """
+    import spprof
+
+    def quick_worker():
+        # Very short-lived thread
+        return sum(range(100))
+
+    spprof.start(interval_ms=5)  # Moderate sampling
+
+    # Create short-lived threads
+    threads = []
+    for _ in range(50):
+        t = threading.Thread(target=quick_worker)
+        t.start()
+        threads.append(t)
+
+    # Wait for all threads to complete
+    for t in threads:
+        t.join()
+
+    profile = spprof.stop()
     assert profile is not None

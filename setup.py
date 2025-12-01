@@ -38,40 +38,46 @@ class SpProfBuildExt(build_ext):
     def build_extensions(self):
         # Detect compiler and add appropriate flags
         compiler_type = self.compiler.compiler_type
-        
+
         for ext in self.extensions:
-            if compiler_type == 'unix':
+            if compiler_type == "unix":
                 # GCC/Clang flags
-                ext.extra_compile_args.extend([
-                    '-Wno-unused-function',
-                    '-Wno-missing-field-initializers',
-                ])
-                
+                ext.extra_compile_args.extend(
+                    [
+                        "-Wno-unused-function",
+                        "-Wno-missing-field-initializers",
+                    ]
+                )
+
                 # Enable debug symbols in debug mode
-                if os.environ.get('SPPROF_DEBUG'):
-                    ext.extra_compile_args.extend(['-g', '-O0'])
-                    ext.define_macros.append(('SPPROF_DEBUG', '1'))
-                    
-            elif compiler_type == 'msvc':
+                if os.environ.get("SPPROF_DEBUG"):
+                    ext.extra_compile_args.extend(["-g", "-O0"])
+                    ext.define_macros.append(("SPPROF_DEBUG", "1"))
+
+            elif compiler_type == "msvc":
                 # MSVC flags
-                if os.environ.get('SPPROF_DEBUG'):
-                    ext.extra_compile_args.extend(['/Zi', '/Od'])
-                    ext.define_macros.append(('SPPROF_DEBUG', '1'))
-        
+                if os.environ.get("SPPROF_DEBUG"):
+                    ext.extra_compile_args.extend(["/Zi", "/Od"])
+                    ext.define_macros.append(("SPPROF_DEBUG", "1"))
+
         try:
             super().build_extensions()
-            print(f"\n[spprof] Successfully built C extension for Python {sys.version_info.major}.{sys.version_info.minor}")
-            print(f"[spprof] Internal API mode: {'enabled' if self._internal_api_enabled() else 'disabled'}")
+            print(
+                f"\n[spprof] Successfully built C extension for Python {sys.version_info.major}.{sys.version_info.minor}"
+            )
+            print(
+                f"[spprof] Internal API mode: {'enabled' if self._internal_api_enabled() else 'disabled'}"
+            )
         except Exception as e:
             print(f"\n[spprof] WARNING: Failed to build C extension: {e}")
             print("[spprof] The package will work with reduced functionality.")
             self.extensions = []
-    
+
     def _internal_api_enabled(self):
         """Check if internal API is enabled."""
         for ext in self.extensions:
             for name, value in ext.define_macros:
-                if name == 'SPPROF_USE_INTERNAL_API' and value:
+                if name == "SPPROF_USE_INTERNAL_API" and value:
                     return True
         return False
 
@@ -79,16 +85,16 @@ class SpProfBuildExt(build_ext):
 def get_python_version_defines():
     """Get version-specific preprocessor defines."""
     defines = []
-    
+
     # Python version info
     major = sys.version_info.major
     minor = sys.version_info.minor
     micro = sys.version_info.micro
-    
-    defines.append(('SPPROF_PY_MAJOR', str(major)))
-    defines.append(('SPPROF_PY_MINOR', str(minor)))
-    defines.append(('SPPROF_PY_MICRO', str(micro)))
-    
+
+    defines.append(("SPPROF_PY_MAJOR", str(major)))
+    defines.append(("SPPROF_PY_MINOR", str(minor)))
+    defines.append(("SPPROF_PY_MICRO", str(micro)))
+
     return defines
 
 
@@ -100,7 +106,7 @@ def get_extension():
     IS_WINDOWS = platform.system() == "Windows"
     IS_MACOS = platform.system() == "Darwin"
     IS_LINUX = platform.system() == "Linux"
-    
+
     # Check Python version and platform for internal API support
     # Windows doesn't need internal API (uses timer callbacks with GIL, not signals)
     # Internal API is only for async-signal-safe frame walking on Linux/macOS
@@ -112,15 +118,15 @@ def get_extension():
         print("[spprof] Building with public API fallback (not async-signal-safe)")
         use_internal_api = False
     else:
-        use_internal_api = os.environ.get('SPPROF_USE_INTERNAL_API', '1') != '0'
-    
+        use_internal_api = os.environ.get("SPPROF_USE_INTERNAL_API", "1") != "0"
+
     # Source directory
     SRC_DIR = Path("src/spprof/_ext")
-    
+
     if not SRC_DIR.exists():
         print(f"[spprof] Source directory not found: {SRC_DIR}")
         return None
-    
+
     # Core sources (always included)
     SOURCES = [
         str(SRC_DIR / "module.c"),
@@ -128,7 +134,7 @@ def get_extension():
         str(SRC_DIR / "resolver.c"),
         str(SRC_DIR / "unwind.c"),
     ]
-    
+
     # Add appropriate framewalker source
     if use_internal_api:
         fw_source = SRC_DIR / "framewalker_internal.c"
@@ -138,12 +144,12 @@ def get_extension():
             SOURCES.append(str(SRC_DIR / "framewalker.c"))
     else:
         SOURCES.append(str(SRC_DIR / "framewalker.c"))
-    
+
     # Add signal handler
     signal_handler = SRC_DIR / "signal_handler.c"
     if signal_handler.exists():
         SOURCES.append(str(signal_handler))
-    
+
     # Platform-specific sources
     if IS_LINUX:
         platform_src = SRC_DIR / "platform" / "linux.c"
@@ -154,45 +160,47 @@ def get_extension():
     else:
         print(f"[spprof] Unsupported platform: {platform.system()}")
         return None
-    
+
     if platform_src.exists():
         SOURCES.append(str(platform_src))
     else:
         print(f"[spprof] Platform source not found: {platform_src}")
-    
+
     # Verify all sources exist
     for src in SOURCES:
         if not Path(src).exists():
             print(f"[spprof] WARNING: Source file missing: {src}")
-    
+
     # Include directories
     INCLUDE_DIRS = [
         str(SRC_DIR),
         str(SRC_DIR / "platform"),
         str(SRC_DIR / "compat"),
     ]
-    
+
     # Add internal API includes if enabled
     if use_internal_api:
         internal_dir = SRC_DIR / "internal"
         if internal_dir.exists():
             INCLUDE_DIRS.append(str(internal_dir))
-    
+
     # Compiler flags
     EXTRA_COMPILE_ARGS = []
     EXTRA_LINK_ARGS = []
     DEFINE_MACROS = []
-    
+
     # Add version defines
     DEFINE_MACROS.extend(get_python_version_defines())
-    
+
     # Enable internal API
     if use_internal_api:
-        DEFINE_MACROS.append(('SPPROF_USE_INTERNAL_API', '1'))
-        print(f"[spprof] Building with internal API for Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+        DEFINE_MACROS.append(("SPPROF_USE_INTERNAL_API", "1"))
+        print(
+            f"[spprof] Building with internal API for Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        )
     else:
         print("[spprof] Building with public API fallback")
-    
+
     if IS_WINDOWS:
         EXTRA_COMPILE_ARGS = [
             "/O2",
@@ -212,22 +220,20 @@ def get_extension():
             "-std=c11",
             "-fvisibility=hidden",  # Hide internal symbols
         ]
-        
+
         # Position-independent code for shared library
         EXTRA_COMPILE_ARGS.append("-fPIC")
-        
+
         # Initialize link args for POSIX platforms
         EXTRA_LINK_ARGS = []
-    
+
     if IS_LINUX:
         EXTRA_LINK_ARGS.extend(["-lrt", "-ldl", "-lpthread"])
-        
+
         # Check for libunwind
         try:
             result = subprocess.run(
-                ["pkg-config", "--exists", "libunwind"],
-                capture_output=True,
-                timeout=5
+                ["pkg-config", "--exists", "libunwind"], capture_output=True, timeout=5
             )
             if result.returncode == 0:
                 EXTRA_LINK_ARGS.append("-lunwind")
@@ -235,13 +241,15 @@ def get_extension():
                 print("[spprof] Found libunwind - enabling advanced unwinding")
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
-    
+
     elif IS_MACOS:
         EXTRA_LINK_ARGS.extend(["-framework", "CoreFoundation"])
-        EXTRA_COMPILE_ARGS.extend([
-            "-mmacosx-version-min=10.15",
-        ])
-    
+        EXTRA_COMPILE_ARGS.extend(
+            [
+                "-mmacosx-version-min=10.15",
+            ]
+        )
+
     # Build the extension
     return Extension(
         "spprof._native",
