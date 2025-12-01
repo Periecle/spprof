@@ -1,16 +1,12 @@
 """
 Build configuration for spprof C extension.
 
-This builds the native extension with internal API access for production
-signal-based sampling. The internal API provides async-signal-safe frame
-walking that's required for reliable profiling.
-
-Build modes:
-  - SPPROF_USE_INTERNAL_API=1 (default): Production mode with internal APIs
-  - SPPROF_USE_INTERNAL_API=0: Fallback to public API (not signal-safe)
+This builds the native extension with internal API access for async-signal-safe
+frame walking. The internal API is used exclusively on all supported Python
+versions (3.9-3.14).
 
 Requirements:
-  - Python 3.11+ (internal frame structures only stable from 3.11)
+  - Python 3.9+ (internal API supports 3.9-3.14)
   - C11 compiler (gcc 4.9+, clang 3.3+, MSVC 2015+)
   - Linux: librt, libdl
   - macOS: Xcode command line tools
@@ -31,7 +27,7 @@ class SpProfBuildExt(build_ext):
     """
     Custom build_ext that:
     1. Detects Python version and sets appropriate flags
-    2. Enables internal API mode by default
+    2. Uses internal API mode (only mode supported)
     3. Falls back gracefully if build fails
     """
 
@@ -65,21 +61,11 @@ class SpProfBuildExt(build_ext):
             print(
                 f"\n[spprof] Successfully built C extension for Python {sys.version_info.major}.{sys.version_info.minor}"
             )
-            print(
-                f"[spprof] Internal API mode: {'enabled' if self._internal_api_enabled() else 'disabled'}"
-            )
+            print("[spprof] Using internal API for async-signal-safe frame walking")
         except Exception as e:
             print(f"\n[spprof] WARNING: Failed to build C extension: {e}")
             print("[spprof] The package will work with reduced functionality.")
             self.extensions = []
-
-    def _internal_api_enabled(self):
-        """Check if internal API is enabled."""
-        for ext in self.extensions:
-            for name, value in ext.define_macros:
-                if name == "SPPROF_USE_INTERNAL_API" and value:
-                    return True
-        return False
 
 
 def get_python_version_defines():
@@ -107,18 +93,10 @@ def get_extension():
     IS_MACOS = platform.system() == "Darwin"
     IS_LINUX = platform.system() == "Linux"
 
-    # Check Python version and platform for internal API support
-    # Windows doesn't need internal API (uses timer callbacks with GIL, not signals)
-    # Internal API is only for async-signal-safe frame walking on Linux/macOS
-    if IS_WINDOWS:
-        print("[spprof] Windows: Using public API (timer callbacks are GIL-safe)")
-        use_internal_api = False
-    elif sys.version_info < (3, 11):
-        print("[spprof] WARNING: Python 3.11+ required for internal API access")
-        print("[spprof] Building with public API fallback (not async-signal-safe)")
-        use_internal_api = False
-    else:
-        use_internal_api = os.environ.get("SPPROF_USE_INTERNAL_API", "1") != "0"
+    # Check minimum Python version (3.9+)
+    if sys.version_info < (3, 9):
+        print("[spprof] ERROR: Python 3.9+ required")
+        return None
 
     # Source directory
     SRC_DIR = Path("src/spprof/_ext")
@@ -184,14 +162,8 @@ def get_extension():
     INCLUDE_DIRS = [
         str(SRC_DIR),
         str(SRC_DIR / "platform"),
-        str(SRC_DIR / "compat"),
+        str(SRC_DIR / "internal"),
     ]
-
-    # Add internal API includes if enabled
-    if use_internal_api:
-        internal_dir = SRC_DIR / "internal"
-        if internal_dir.exists():
-            INCLUDE_DIRS.append(str(internal_dir))
 
     # Compiler flags
     EXTRA_COMPILE_ARGS = []
@@ -201,14 +173,9 @@ def get_extension():
     # Add version defines
     DEFINE_MACROS.extend(get_python_version_defines())
 
-    # Enable internal API
-    if use_internal_api:
-        DEFINE_MACROS.append(("SPPROF_USE_INTERNAL_API", "1"))
-        print(
-            f"[spprof] Building with internal API for Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-        )
-    else:
-        print("[spprof] Building with public API fallback")
+    print(
+        f"[spprof] Building with internal API for Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    )
 
     if IS_WINDOWS:
         EXTRA_COMPILE_ARGS = [
@@ -301,6 +268,8 @@ setup(
         "Operating System :: MacOS :: MacOS X",
         "Operating System :: Microsoft :: Windows",
         "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",

@@ -35,10 +35,11 @@
 /*
  * Include internal headers for free-threading detection.
  * The SPPROF_FREE_THREADING_SAFE macro is defined in pycore_frame.h.
+ *
+ * We always use the internal API for frame walking on all supported
+ * Python versions (3.9-3.14).
  */
-#ifdef SPPROF_USE_INTERNAL_API
 #include "internal/pycore_frame.h"
-#endif
 
 /* Global state - exposed for platform signal handlers */
 /* Must be visible for signal_handler.c to access via extern */
@@ -79,7 +80,6 @@ static PyObject* spprof_start(PyObject* self, PyObject* args, PyObject* kwargs) 
      * We check SPPROF_FREE_THREADING_SAFE at compile time and fail early
      * with a clear error message if the configuration is unsafe.
      */
-#ifdef SPPROF_USE_INTERNAL_API
 #if !SPPROF_FREE_THREADING_SAFE
     PyErr_SetString(PyExc_RuntimeError,
         "spprof is not supported on free-threaded Python builds on this platform. "
@@ -89,7 +89,6 @@ static PyObject* spprof_start(PyObject* self, PyObject* args, PyObject* kwargs) 
         "On Linux, consider using alternative profilers like py-spy or scalene."
     );
     return NULL;
-#endif
 #endif
 
     /* Check if already running (atomic read) */
@@ -775,23 +774,14 @@ PyMODINIT_FUNC PyInit__native(void) {
     }
 #endif
 
-#ifdef SPPROF_USE_INTERNAL_API
-    #if SPPROF_FREE_THREADING_SAFE
+#if SPPROF_FREE_THREADING_SAFE
     if (PyModule_AddIntConstant(module, "free_threading_safe", 1) < 0) {
         platform_cleanup();
         Py_DECREF(module);
         return NULL;
     }
-    #else
-    if (PyModule_AddIntConstant(module, "free_threading_safe", 0) < 0) {
-        platform_cleanup();
-        Py_DECREF(module);
-        return NULL;
-    }
-    #endif
 #else
-    /* Without internal API, we're not using signal-based sampling in production */
-    if (PyModule_AddIntConstant(module, "free_threading_safe", 1) < 0) {
+    if (PyModule_AddIntConstant(module, "free_threading_safe", 0) < 0) {
         platform_cleanup();
         Py_DECREF(module);
         return NULL;
