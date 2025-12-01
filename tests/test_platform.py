@@ -71,7 +71,7 @@ def test_linux_timer_mechanism():
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS-specific timer mechanism test")
 def test_darwin_timer_mechanism():
     """Test macOS-specific Mach-based sampling functionality.
-    
+
     The Darwin implementation uses Mach kernel APIs for sampling:
     - pthread_introspection_hook for thread discovery
     - thread_suspend/resume for safe sampling
@@ -94,32 +94,33 @@ def test_darwin_timer_mechanism():
 @pytest.mark.skipif(platform.system() != "Darwin", reason="Darwin-specific multi-thread test")
 def test_darwin_multithread_sampling():
     """Test Darwin Mach sampler captures all threads.
-    
+
     The Mach sampler should sample ALL threads in the process,
     not just the main thread (unlike the old setitimer approach).
     """
     import threading
+
     import spprof
 
     results = []
-    
+
     def worker():
         total = 0
         for i in range(200000):
             total += i
         results.append(total)
-    
+
     threads = [threading.Thread(target=worker) for _ in range(4)]
-    
+
     spprof.start(interval_ms=10)
-    
+
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    
+
     profile = spprof.stop()
-    
+
     assert len(results) == 4
     assert profile is not None
 
@@ -127,7 +128,7 @@ def test_darwin_multithread_sampling():
 @pytest.mark.skipif(platform.system() != "Darwin", reason="Darwin-specific stress test")
 def test_darwin_start_stop_stress():
     """Test rapid start/stop cycles on Darwin don't cause crashes.
-    
+
     Validates race-free shutdown of the Mach sampler thread.
     """
     import spprof

@@ -93,33 +93,38 @@ def main():
 
     results = []
 
-    print("Measuring spprof overhead...")
-    print(f"Workload: {args.iterations} iterations of CPU-bound work")
-    print()
+    # When outputting JSON, suppress human-readable output
+    verbose = not args.json
+
+    if verbose:
+        print("Measuring spprof overhead...")
+        print(f"Workload: {args.iterations} iterations of CPU-bound work")
+        print()
 
     for interval in args.intervals:
-        print(f"Testing {interval}ms interval...", end=" ", flush=True)
+        if verbose:
+            print(f"Testing {interval}ms interval...", end=" ", flush=True)
         result = measure_overhead(interval, args.iterations)
         results.append(result)
-        print(f"Overhead: {result['overhead_pct']:.2f}%")
+        if verbose:
+            print(f"Overhead: {result['overhead_pct']:.2f}%")
 
-    print()
-    print("Results:")
-    print("-" * 60)
-    print(f"{'Interval':>10} {'Baseline':>12} {'Profiled':>12} {'Overhead':>10}")
-    print("-" * 60)
+    if verbose:
+        print()
+        print("Results:")
+        print("-" * 60)
+        print(f"{'Interval':>10} {'Baseline':>12} {'Profiled':>12} {'Overhead':>10}")
+        print("-" * 60)
 
-    for r in results:
-        print(
-            f"{r['interval_ms']:>8}ms {r['baseline_time']:>10.3f}s "
-            f"{r['profiled_time']:>10.3f}s {r['overhead_pct']:>8.2f}%"
-        )
+        for r in results:
+            print(
+                f"{r['interval_ms']:>8}ms {r['baseline_time']:>10.3f}s "
+                f"{r['profiled_time']:>10.3f}s {r['overhead_pct']:>8.2f}%"
+            )
 
     if args.json:
         import json
 
-        print()
-        print("JSON output:")
         print(json.dumps(results, indent=2))
 
 

@@ -2,11 +2,16 @@
 """
 Debug script to check native frame capture.
 """
+
+import math
 import sys
 from pathlib import Path
+
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import spprof
+
 
 print("=" * 60)
 print("Native Frame Debug")
@@ -22,7 +27,6 @@ print("\n" + "-" * 60)
 print("Running simple profile...")
 print("-" * 60)
 
-import math
 
 def compute_heavy():
     """Heavy computation with native math calls."""
@@ -31,6 +35,7 @@ def compute_heavy():
         result += math.sin(float(i)) * math.cos(float(i))
         result += math.sqrt(float(i))
     return result
+
 
 spprof.start(interval_ms=1)
 
@@ -68,4 +73,3 @@ for i, sample in enumerate(profile.samples[:3]):
         print(f"  {j:2d} {tag} {frame.function_name}")
         print(f"       file: {frame.filename}")
         print(f"       line: {frame.lineno}")
-

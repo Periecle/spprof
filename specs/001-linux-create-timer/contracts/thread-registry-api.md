@@ -403,3 +403,4 @@ void platform_get_extended_stats(
 - `platform_unregister_thread()`
 - `platform_get_stats()`
 
+

@@ -386,3 +386,4 @@ size_t registry_snapshot(ThreadRegistry* r, thread_act_t* out, size_t max) {
 | Frame pointer omitted | Low | Low | Rare on macOS; graceful termination of walk |
 | API deprecation | Very Low | High | Apple APIs stable; monitor WWDC |
 
+

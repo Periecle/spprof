@@ -1,6 +1,30 @@
 """Integration tests for the profiler."""
 
+import contextlib
+import time
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def cleanup_profiler():
+    """Ensure profiler is stopped before and after each test."""
+    import spprof
+
+    # Cleanup before test
+    if spprof.is_active():
+        with contextlib.suppress(Exception):
+            spprof.stop()
+
+    yield
+
+    # Cleanup after test
+    if spprof.is_active():
+        with contextlib.suppress(Exception):
+            spprof.stop()
+
+    # Small delay to ensure timers are fully cleaned up
+    time.sleep(0.05)
 
 
 def test_import():
@@ -13,10 +37,6 @@ def test_import():
 def test_start_stop_basic():
     """Verify start/stop cycle completes without error."""
     import spprof
-
-    # Ensure not already running
-    if spprof.is_active():
-        spprof.stop()
 
     # Start profiling
     spprof.start(interval_ms=10)
@@ -53,10 +73,6 @@ def test_double_start_raises():
 def test_stop_without_start_raises():
     """Verify stopping without starting raises RuntimeError."""
     import spprof
-
-    # Ensure not running
-    if spprof.is_active():
-        spprof.stop()
 
     with pytest.raises(RuntimeError, match="not running"):
         spprof.stop()
