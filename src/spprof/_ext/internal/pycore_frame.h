@@ -9,14 +9,24 @@
  * what CPython uses internally, or memory access will be incorrect.
  *
  * Supported versions:
+ *   - Python 3.9.x
+ *   - Python 3.10.x
  *   - Python 3.11.x
  *   - Python 3.12.x
  *   - Python 3.13.x
  *   - Python 3.14.x
  *
  * References:
- *   - CPython Include/internal/pycore_frame.h
+ *   - CPython Include/cpython/frameobject.h (3.9/3.10)
+ *   - CPython Include/internal/pycore_frame.h (3.11+)
  *   - CPython Include/cpython/pystate.h
+ *
+ * ASYNC-SIGNAL-SAFETY:
+ *   All inline accessor functions in this header are async-signal-safe:
+ *   - No Python C API calls (except PyCode_Check in 3.13+ which is unavoidable)
+ *   - No memory allocation
+ *   - No locks
+ *   - Direct struct field access only
  *
  * Copyright (c) 2024 spprof contributors
  * SPDX-License-Identifier: MIT
@@ -36,15 +46,29 @@ extern "C" {
  * =============================================================================
  * Version Detection
  * =============================================================================
+ *
+ * Version macros for compile-time dispatch. Only ONE of these will be true
+ * at compile time, allowing version-specific code paths.
  */
 
+#define SPPROF_PY39  (PY_VERSION_HEX >= 0x03090000 && PY_VERSION_HEX < 0x030A0000)
+#define SPPROF_PY310 (PY_VERSION_HEX >= 0x030A0000 && PY_VERSION_HEX < 0x030B0000)
 #define SPPROF_PY311 (PY_VERSION_HEX >= 0x030B0000 && PY_VERSION_HEX < 0x030C0000)
 #define SPPROF_PY312 (PY_VERSION_HEX >= 0x030C0000 && PY_VERSION_HEX < 0x030D0000)
 #define SPPROF_PY313 (PY_VERSION_HEX >= 0x030D0000 && PY_VERSION_HEX < 0x030E0000)
 #define SPPROF_PY314 (PY_VERSION_HEX >= 0x030E0000)
 
-#if PY_VERSION_HEX < 0x030B0000
-    #error "spprof internal API requires Python 3.11 or later"
+/* Minimum supported version is Python 3.9 */
+#if PY_VERSION_HEX < 0x03090000
+    #error "spprof requires Python 3.9 or later"
+#endif
+
+/*
+ * Include frameobject.h for Python 3.9 to get PyTryBlock definition.
+ * This is safe to include on all versions but only needed for 3.9.
+ */
+#if SPPROF_PY39
+#include <frameobject.h>
 #endif
 
 /*
@@ -172,6 +196,8 @@ typedef union _spprof_StackRef {
 
 /*
  * Frame ownership constants - consistent across all versions
+ *
+ * ASYNC-SIGNAL-SAFE: These are just integer constants, safe to use anywhere.
  */
 enum _spprof_frameowner {
     SPPROF_FRAME_OWNED_BY_THREAD = 0,
@@ -179,6 +205,275 @@ enum _spprof_frameowner {
     SPPROF_FRAME_OWNED_BY_FRAME_OBJECT = 2,
     SPPROF_FRAME_OWNED_BY_CSTACK = 3,
 };
+
+/*
+ * =============================================================================
+ * Python 3.9 Frame Structures
+ * =============================================================================
+ *
+ * In Python 3.9, PyFrameObject is the frame representation and is directly
+ * accessible. The frame chain is linked via f_back pointers.
+ *
+ * Thread state access: tstate->frame points to the current frame.
+ *
+ * Source: CPython Include/cpython/frameobject.h (tag: v3.9.0 - v3.9.21)
+ *
+ * ASYNC-SIGNAL-SAFETY:
+ *   - All accessors below are async-signal-safe
+ *   - No Python C API calls
+ *   - Direct memory reads only
+ */
+#if SPPROF_PY39
+
+/*
+ * CO_MAXBLOCKS is defined in CPython's code.h but may not be available
+ * in all build configurations. Define it if missing.
+ */
+#ifndef CO_MAXBLOCKS
+#define CO_MAXBLOCKS 20
+#endif
+
+/*
+ * Python 3.9 PyFrameObject layout - EXACT match to CPython 3.9.x
+ *
+ * Note: This struct is larger than what we need for frame walking,
+ * but we define the full layout to ensure correct field offsets.
+ */
+typedef struct _spprof_PyFrameObject_39 {
+    PyObject_VAR_HEAD
+    struct _spprof_PyFrameObject_39 *f_back;  /* Previous frame (toward caller) */
+    PyCodeObject *f_code;                      /* Code object */
+    PyObject *f_builtins;                      /* Builtins namespace */
+    PyObject *f_globals;                       /* Global namespace */
+    PyObject *f_locals;                        /* Local namespace (may be NULL) */
+    PyObject **f_valuestack;                   /* Points after local variables */
+    /* Running state */
+    PyObject **f_stacktop;                     /* Stack top pointer */
+    PyObject *f_trace;                         /* Trace function (may be NULL) */
+    char f_trace_lines;                        /* Emit per-line trace events */
+    char f_trace_opcodes;                      /* Emit per-opcode trace events */
+    PyObject *f_gen;                           /* Generator/coroutine if this is a gen frame */
+    int f_lasti;                               /* Last instruction (byte offset) */
+    int f_lineno;                              /* Current line number */
+    int f_iblock;                              /* Current block stack depth */
+    char f_executing;                          /* Is the frame currently executing? */
+    PyTryBlock f_blockstack[CO_MAXBLOCKS];     /* Block stack */
+    PyObject *f_localsplus[1];                 /* Local variables + cells + freevars */
+} _spprof_PyFrameObject_39;
+
+/* Use a typedef for the version-specific frame type */
+typedef _spprof_PyFrameObject_39 _spprof_PyFrameObject;
+
+/*
+ * Accessors for Python 3.9
+ *
+ * ASYNC-SIGNAL-SAFE: All functions below perform only direct memory reads.
+ */
+
+/* Get current frame from thread state */
+static inline _spprof_PyFrameObject*
+_spprof_get_current_frame(PyThreadState *tstate) {
+    if (tstate == NULL) return NULL;
+    /* In Python 3.9, tstate->frame is the current PyFrameObject */
+    return (_spprof_PyFrameObject *)tstate->frame;
+}
+
+/* Get previous frame in call chain */
+static inline _spprof_PyFrameObject*
+_spprof_frame_get_previous(_spprof_PyFrameObject *frame) {
+    return frame ? frame->f_back : NULL;
+}
+
+/* Get code object from frame */
+static inline PyCodeObject*
+_spprof_frame_get_code(_spprof_PyFrameObject *frame) {
+    return frame ? frame->f_code : NULL;
+}
+
+/*
+ * Get instruction pointer for line number calculation.
+ *
+ * In Python 3.9, f_lasti is a byte offset into co_code.
+ * We compute the actual pointer for consistency with 3.11+.
+ *
+ * Note: co_code is a bytes object in 3.9.
+ */
+static inline void*
+_spprof_frame_get_instr_ptr(_spprof_PyFrameObject *frame) {
+    if (frame == NULL || frame->f_code == NULL) return NULL;
+    if (frame->f_lasti < 0) return NULL;
+    PyObject *co_code = frame->f_code->co_code;
+    if (co_code == NULL) return NULL;
+    return (void*)(PyBytes_AS_STRING(co_code) + frame->f_lasti);
+}
+
+/*
+ * Check if frame is a shim frame.
+ *
+ * Python 3.9 doesn't have explicit shim frames (those were added in 3.11
+ * with the _PyInterpreterFrame restructuring). Always returns 0.
+ */
+static inline int
+_spprof_frame_is_shim(_spprof_PyFrameObject *frame) {
+    (void)frame;  /* Unused */
+    return 0;
+}
+
+/*
+ * Get frame ownership type.
+ *
+ * Python 3.9 doesn't have an explicit owner field. We infer ownership:
+ * - If the code object has generator/coroutine flags, it's generator-owned
+ * - Otherwise, it's thread-owned
+ *
+ * Note: We can't detect FRAME_OWNED_BY_FRAME_OBJECT or CSTACK in 3.9.
+ */
+static inline int
+_spprof_frame_get_owner(_spprof_PyFrameObject *frame) {
+    if (frame == NULL) return -1;
+    /* Detect generator/coroutine via code flags */
+    if (frame->f_code != NULL) {
+        int flags = frame->f_code->co_flags;
+        if (flags & (CO_GENERATOR | CO_COROUTINE | CO_ASYNC_GENERATOR)) {
+            return SPPROF_FRAME_OWNED_BY_GENERATOR;
+        }
+    }
+    return SPPROF_FRAME_OWNED_BY_THREAD;
+}
+
+#endif /* SPPROF_PY39 */
+
+/*
+ * =============================================================================
+ * Python 3.10 Frame Structures
+ * =============================================================================
+ *
+ * Python 3.10 still uses PyFrameObject but with some layout changes:
+ * - f_stacktop removed, replaced with f_stackdepth
+ * - f_gen removed, replaced with f_gen_or_coro flag
+ * - f_iblock and f_blockstack removed
+ * - f_executing removed
+ * - f_state enum added (PyFrameState)
+ *
+ * Thread state access: tstate->frame points to the current frame.
+ *
+ * Source: CPython Include/cpython/frameobject.h (tag: v3.10.0 - v3.10.16)
+ *
+ * ASYNC-SIGNAL-SAFETY:
+ *   - All accessors below are async-signal-safe
+ *   - No Python C API calls
+ *   - Direct memory reads only
+ */
+#if SPPROF_PY310
+
+/*
+ * PyFrameState enum values for Python 3.10
+ *
+ * We define our own enum to avoid depending on internal headers.
+ */
+typedef enum _spprof_PyFrameState {
+    SPPROF_FRAME_CREATED = -2,
+    SPPROF_FRAME_SUSPENDED = -1,
+    SPPROF_FRAME_EXECUTING = 0,
+    SPPROF_FRAME_COMPLETED = 1,
+    SPPROF_FRAME_CLEARED = 4,
+} _spprof_PyFrameState;
+
+/*
+ * Python 3.10 PyFrameObject layout - EXACT match to CPython 3.10.x
+ */
+typedef struct _spprof_PyFrameObject_310 {
+    PyObject_VAR_HEAD
+    struct _spprof_PyFrameObject_310 *f_back;  /* Previous frame (toward caller) */
+    PyCodeObject *f_code;                       /* Code object */
+    PyObject *f_builtins;                       /* Builtins namespace */
+    PyObject *f_globals;                        /* Global namespace */
+    PyObject *f_locals;                         /* Local namespace (may be NULL) */
+    PyObject **f_valuestack;                    /* Points after local variables */
+    PyObject *f_trace;                          /* Trace function (may be NULL) */
+    int f_stackdepth;                           /* Depth of value stack */
+    char f_trace_lines;                         /* Emit per-line trace events */
+    char f_trace_opcodes;                       /* Emit per-opcode trace events */
+    char f_gen_or_coro;                         /* True if generator/coroutine frame */
+    /* State and execution info */
+    PyFrameState f_state;                       /* Frame state enum */
+    int f_lasti;                                /* Last instruction (byte offset) */
+    int f_lineno;                               /* Current line number (when tracing) */
+    /* Note: f_localsplus follows but is variable-sized */
+} _spprof_PyFrameObject_310;
+
+/* Use a typedef for the version-specific frame type */
+typedef _spprof_PyFrameObject_310 _spprof_PyFrameObject;
+
+/*
+ * Accessors for Python 3.10
+ *
+ * ASYNC-SIGNAL-SAFE: All functions below perform only direct memory reads.
+ */
+
+/* Get current frame from thread state */
+static inline _spprof_PyFrameObject*
+_spprof_get_current_frame(PyThreadState *tstate) {
+    if (tstate == NULL) return NULL;
+    /* In Python 3.10, tstate->frame is the current PyFrameObject */
+    return (_spprof_PyFrameObject *)tstate->frame;
+}
+
+/* Get previous frame in call chain */
+static inline _spprof_PyFrameObject*
+_spprof_frame_get_previous(_spprof_PyFrameObject *frame) {
+    return frame ? frame->f_back : NULL;
+}
+
+/* Get code object from frame */
+static inline PyCodeObject*
+_spprof_frame_get_code(_spprof_PyFrameObject *frame) {
+    return frame ? frame->f_code : NULL;
+}
+
+/*
+ * Get instruction pointer for line number calculation.
+ *
+ * In Python 3.10, f_lasti is still a byte offset into co_code.
+ * Note: co_code is a bytes object in 3.10.
+ */
+static inline void*
+_spprof_frame_get_instr_ptr(_spprof_PyFrameObject *frame) {
+    if (frame == NULL || frame->f_code == NULL) return NULL;
+    if (frame->f_lasti < 0) return NULL;
+    PyObject *co_code = frame->f_code->co_code;
+    if (co_code == NULL) return NULL;
+    return (void*)(PyBytes_AS_STRING(co_code) + frame->f_lasti);
+}
+
+/*
+ * Check if frame is a shim frame.
+ *
+ * Python 3.10 doesn't have explicit shim frames. Always returns 0.
+ */
+static inline int
+_spprof_frame_is_shim(_spprof_PyFrameObject *frame) {
+    (void)frame;  /* Unused */
+    return 0;
+}
+
+/*
+ * Get frame ownership type.
+ *
+ * Python 3.10 has the f_gen_or_coro field which makes this easier
+ * than 3.9's code flag check.
+ */
+static inline int
+_spprof_frame_get_owner(_spprof_PyFrameObject *frame) {
+    if (frame == NULL) return -1;
+    /* Use f_gen_or_coro field for ownership detection */
+    if (frame->f_gen_or_coro) {
+        return SPPROF_FRAME_OWNED_BY_GENERATOR;
+    }
+    return SPPROF_FRAME_OWNED_BY_THREAD;
+}
+
+#endif /* SPPROF_PY310 */
 
 /*
  * =============================================================================
@@ -473,9 +768,20 @@ _spprof_frame_get_code(_spprof_InterpreterFrame *frame) {
 
 /*
  * =============================================================================
- * Common Functions (all versions)
+ * Common Functions for Python 3.11+ (InterpreterFrame-based)
  * =============================================================================
+ *
+ * These functions are only defined for Python 3.11+ where we use
+ * _spprof_InterpreterFrame. Python 3.9/3.10 use _spprof_PyFrameObject
+ * and have their own accessors defined above.
+ *
+ * ASYNC-SIGNAL-SAFETY:
+ *   All functions below are async-signal-safe:
+ *   - Direct struct field access only
+ *   - No Python C API calls
+ *   - No memory allocation
  */
+#if SPPROF_PY311 || SPPROF_PY312 || SPPROF_PY313 || SPPROF_PY314
 
 static inline _spprof_InterpreterFrame*
 _spprof_frame_get_previous(_spprof_InterpreterFrame *frame) {
@@ -496,6 +802,8 @@ _spprof_frame_get_owner(_spprof_InterpreterFrame *frame) {
  * Get instruction pointer for line number calculation.
  * Returns a raw pointer to the current instruction.
  * We use void* to avoid type definition issues across versions.
+ *
+ * ASYNC-SIGNAL-SAFE: Direct memory read.
  */
 static inline void*
 _spprof_frame_get_instr_ptr(_spprof_InterpreterFrame *frame) {
@@ -507,6 +815,8 @@ _spprof_frame_get_instr_ptr(_spprof_InterpreterFrame *frame) {
     return (void*)frame->instr_ptr;
 #endif
 }
+
+#endif /* SPPROF_PY311 || SPPROF_PY312 || SPPROF_PY313 || SPPROF_PY314 */
 
 #ifdef __cplusplus
 }

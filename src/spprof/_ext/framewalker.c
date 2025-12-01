@@ -1,24 +1,27 @@
 /**
- * framewalker.c - Unified version-polymorphic Python frame walking
+ * framewalker.c - Async-signal-safe Python frame walking
  *
- * This implementation supports two modes via compile-time dispatch:
+ * This implementation uses internal Python structure access exclusively
+ * for all supported Python versions (3.9-3.14). The internal API provides:
  *
- * 1. INTERNAL API MODE (SPPROF_USE_INTERNAL_API defined):
- *    - Direct internal structure access for async-signal-safe frame walking
- *    - Required for production signal-based sampling
- *    - Python 3.11+ only
+ *   - Async-signal-safe frame capture (required for signal-based sampling)
+ *   - Consistent frame details across all Python versions
+ *   - No Python C API calls during sampling (except PyCode_Check on 3.13+)
+ *   - Single code path for simplified maintenance
  *
- * 2. PUBLIC API MODE (SPPROF_USE_INTERNAL_API not defined):
- *    - Uses public Python C API with version-specific compat headers
- *    - NOT async-signal-safe (Py_DECREF, etc. are called)
- *    - Works for testing and Python 3.9/3.10 fallback
- *
- * CRITICAL SAFETY PROPERTIES (internal API mode):
+ * CRITICAL SAFETY PROPERTIES:
  *   - All capture functions are async-signal-safe
- *   - No Python API calls during sampling
- *   - No memory allocation
- *   - No locks
+ *   - No memory allocation in capture paths
+ *   - No locks in capture paths
  *   - Direct struct field access only
+ *
+ * Supported Python versions:
+ *   - Python 3.9.x  (PyFrameObject via tstate->frame)
+ *   - Python 3.10.x (PyFrameObject via tstate->frame)
+ *   - Python 3.11.x (_PyInterpreterFrame via cframe)
+ *   - Python 3.12.x (_PyInterpreterFrame via cframe)
+ *   - Python 3.13.x (_PyInterpreterFrame via current_frame)
+ *   - Python 3.14.x (_PyInterpreterFrame via current_frame)
  *
  * Copyright (c) 2024 spprof contributors
  * SPDX-License-Identifier: MIT
@@ -34,35 +37,18 @@
 
 /*
  * =============================================================================
- * Mode Selection and Header Includes
+ * Internal API Headers
  * =============================================================================
+ *
+ * We always use the internal API for frame walking. This provides async-signal-
+ * safe frame capture on all supported Python versions.
  */
 
-#ifdef SPPROF_USE_INTERNAL_API
-    /* Production mode: async-signal-safe internal API */
-    #include "internal/pycore_frame.h"
-    #include "internal/pycore_tstate.h"
-    #define FRAMEWALKER_MODE "internal"
-#else
-    /* Fallback mode: public API with version dispatch (NOT async-signal-safe) */
-    #if PY_VERSION_HEX >= 0x030E0000  /* Python 3.14+ */
-        #include "compat/py314.h"
-        #define WALKER_VERSION "py314"
-    #elif PY_VERSION_HEX >= 0x030D0000  /* Python 3.13 */
-        #include "compat/py313.h"
-        #define WALKER_VERSION "py313"
-    #elif PY_VERSION_HEX >= 0x030C0000  /* Python 3.12 */
-        #include "compat/py312.h"
-        #define WALKER_VERSION "py312"
-    #elif PY_VERSION_HEX >= 0x030B0000  /* Python 3.11 */
-        #include "compat/py311.h"
-        #define WALKER_VERSION "py311"
-    #else  /* Python 3.9, 3.10 */
-        #include "compat/py39.h"
-        #define WALKER_VERSION "py39"
-    #endif
-    #define FRAMEWALKER_MODE "public-api"
-#endif
+#include "internal/pycore_frame.h"
+#include "internal/pycore_tstate.h"
+
+/* Mode identifier for version info string */
+#define FRAMEWALKER_MODE "internal-api"
 
 /*
  * =============================================================================
@@ -81,9 +67,10 @@ static FrameWalkerVTable g_vtable;
  * =============================================================================
  * Internal API Implementation (Async-Signal-Safe)
  * =============================================================================
+ *
+ * All functions below are async-signal-safe and use direct struct access.
+ * They work for all supported Python versions (3.9-3.14).
  */
-
-#ifdef SPPROF_USE_INTERNAL_API
 
 /**
  * Get current frame from thread state - ASYNC-SIGNAL-SAFE
@@ -95,58 +82,49 @@ static void* internal_get_current_frame(PyThreadState* tstate) {
 
 /**
  * Get previous frame in chain - ASYNC-SIGNAL-SAFE
+ *
+ * Note: Uses version-specific frame type internally.
  */
 static void* internal_get_previous_frame(void* frame) {
     if (frame == NULL) return NULL;
+#if SPPROF_PY39 || SPPROF_PY310
+    return (void*)_spprof_frame_get_previous((_spprof_PyFrameObject*)frame);
+#else
     return (void*)_spprof_frame_get_previous((_spprof_InterpreterFrame*)frame);
+#endif
 }
 
 /**
  * Get code object address - ASYNC-SIGNAL-SAFE
+ *
+ * Note: Uses version-specific frame type internally.
  */
 static uintptr_t internal_get_code_addr(void* frame) {
     if (frame == NULL) return 0;
+#if SPPROF_PY39 || SPPROF_PY310
+    PyCodeObject* code = _spprof_frame_get_code((_spprof_PyFrameObject*)frame);
+#else
     PyCodeObject* code = _spprof_frame_get_code((_spprof_InterpreterFrame*)frame);
+#endif
     if (code == NULL) return 0;
     return (uintptr_t)code;
 }
 
 /**
  * Check if frame is a shim - ASYNC-SIGNAL-SAFE
+ *
+ * Note: Python 3.9/3.10 don't have shim frames, always returns 0.
  */
 static int internal_is_shim_frame(void* frame) {
     if (frame == NULL) return 0;
+#if SPPROF_PY39 || SPPROF_PY310
+    /* Python 3.9/3.10 don't have shim frames */
+    (void)frame;
+    return 0;
+#else
     return _spprof_frame_is_shim((_spprof_InterpreterFrame*)frame);
+#endif
 }
-
-#else /* !SPPROF_USE_INTERNAL_API */
-
-/*
- * =============================================================================
- * Public API Implementation (NOT async-signal-safe)
- * =============================================================================
- *
- * These use the version-specific compat headers which call Python C API functions.
- * The compat_* functions are defined as static inline in the included header.
- */
-
-static void* public_get_current_frame(PyThreadState* tstate) {
-    return compat_get_current_frame(tstate);
-}
-
-static void* public_get_previous_frame(void* frame) {
-    return compat_get_previous_frame(frame);
-}
-
-static uintptr_t public_get_code_addr(void* frame) {
-    return compat_get_code_addr(frame);
-}
-
-static int public_is_shim_frame(void* frame) {
-    return compat_is_shim_frame(frame);
-}
-
-#endif /* SPPROF_USE_INTERNAL_API */
 
 /*
  * =============================================================================
@@ -159,7 +137,6 @@ int framewalker_init(void) {
         return 0;
     }
 
-#ifdef SPPROF_USE_INTERNAL_API
     /* Set up internal API function pointers */
     g_vtable.get_current_frame = internal_get_current_frame;
     g_vtable.get_previous_frame = internal_get_previous_frame;
@@ -167,21 +144,9 @@ int framewalker_init(void) {
     g_vtable.is_shim_frame = internal_is_shim_frame;
     
     snprintf(g_version_info, sizeof(g_version_info),
-             "internal-api (Python %d.%d.%d, %s mode)",
-             PY_MAJOR_VERSION, PY_MINOR_VERSION, PY_MICRO_VERSION,
-             FRAMEWALKER_MODE);
-#else
-    /* Set up public API function pointers */
-    g_vtable.get_current_frame = public_get_current_frame;
-    g_vtable.get_previous_frame = public_get_previous_frame;
-    g_vtable.get_code_addr = public_get_code_addr;
-    g_vtable.is_shim_frame = public_is_shim_frame;
-    
-    snprintf(g_version_info, sizeof(g_version_info),
-             "%s (Python %d.%d.%d) WARNING: not async-signal-safe",
-             WALKER_VERSION,
+             "%s (Python %d.%d.%d)",
+             FRAMEWALKER_MODE,
              PY_MAJOR_VERSION, PY_MINOR_VERSION, PY_MICRO_VERSION);
-#endif
 
     g_initialized = 1;
     return 0;
@@ -197,7 +162,10 @@ int framewalker_init(void) {
  * Capture frames as raw uintptr_t array - PRIMARY CAPTURE FUNCTION
  *
  * This is the primary capture function used by the signal handler.
- * In internal API mode, this is fully async-signal-safe.
+ * It is fully async-signal-safe on all supported Python versions.
+ *
+ * ASYNC-SIGNAL-SAFE: Uses _spprof_capture_frames_unsafe() which performs
+ * only direct memory reads without Python API calls.
  *
  * @param frame_ptrs Output array of code object pointers.
  * @param max_depth Maximum number of frames.
@@ -208,33 +176,14 @@ int framewalker_capture_raw(uintptr_t* frame_ptrs, int max_depth) {
         return 0;
     }
 
-#ifdef SPPROF_USE_INTERNAL_API
-    /* Use the fully async-signal-safe implementation */
+    /* Use the fully async-signal-safe internal API implementation */
     return _spprof_capture_frames_unsafe(frame_ptrs, max_depth);
-#else
-    /* Fallback to public API (unsafe in signal handlers but functional for testing) */
-    PyThreadState* tstate = PyThreadState_GET();
-    if (tstate == NULL) {
-        return 0;
-    }
-
-    void* frame = g_vtable.get_current_frame(tstate);
-    int depth = 0;
-
-    while (frame != NULL && depth < max_depth) {
-        if (!g_vtable.is_shim_frame(frame)) {
-            frame_ptrs[depth] = g_vtable.get_code_addr(frame);
-            depth++;
-        }
-        frame = g_vtable.get_previous_frame(frame);
-    }
-
-    return depth;
-#endif
 }
 
 /**
  * Capture frames with full frame info
+ *
+ * ASYNC-SIGNAL-SAFE: Uses internal API with direct memory reads.
  *
  * @param frames Output array to fill with frame info.
  * @param max_depth Maximum number of frames to capture.
@@ -245,15 +194,37 @@ int framewalker_capture(RawFrameInfo* frames, int max_depth) {
         return 0;
     }
 
-#ifdef SPPROF_USE_INTERNAL_API
     /* Get thread state and walk frames using internal API */
     PyThreadState* tstate = _spprof_tstate_get();
     if (tstate == NULL) {
         return 0;
     }
 
-    _spprof_InterpreterFrame* frame = _spprof_get_current_frame(tstate);
     int depth = 0;
+
+#if SPPROF_PY39 || SPPROF_PY310
+    /* Python 3.9/3.10: Use PyFrameObject */
+    _spprof_PyFrameObject* frame = _spprof_get_current_frame(tstate);
+
+    while (frame != NULL && depth < max_depth) {
+        if (!_spprof_ptr_valid(frame)) {
+            break;
+        }
+
+        /* Python 3.9/3.10 don't have shim frames */
+        frames[depth].is_shim = 0;
+        
+        PyCodeObject* code = _spprof_frame_get_code(frame);
+        if (code != NULL && _spprof_ptr_valid(code)) {
+            frames[depth].code_addr = (uintptr_t)code;
+            depth++;
+        }
+        
+        frame = _spprof_frame_get_previous(frame);
+    }
+#else
+    /* Python 3.11+: Use _PyInterpreterFrame */
+    _spprof_InterpreterFrame* frame = _spprof_get_current_frame(tstate);
 
     while (frame != NULL && depth < max_depth) {
         if (!_spprof_ptr_valid(frame)) {
@@ -273,29 +244,9 @@ int framewalker_capture(RawFrameInfo* frames, int max_depth) {
         
         frame = _spprof_frame_get_previous(frame);
     }
-
-    return depth;
-#else
-    /* Fallback to public API */
-    PyThreadState* tstate = PyThreadState_GET();
-    if (tstate == NULL) {
-        return 0;
-    }
-
-    void* frame = g_vtable.get_current_frame(tstate);
-    int depth = 0;
-
-    while (frame != NULL && depth < max_depth) {
-        frames[depth].is_shim = g_vtable.is_shim_frame(frame);
-        if (!frames[depth].is_shim) {
-            frames[depth].code_addr = g_vtable.get_code_addr(frame);
-            depth++;
-        }
-        frame = g_vtable.get_previous_frame(frame);
-    }
-
-    return depth;
 #endif
+
+    return depth;
 }
 
 /*
@@ -347,13 +298,14 @@ int framewalker_native_unwinding_available(void) {
  * =============================================================================
  */
 
-#ifdef SPPROF_USE_INTERNAL_API
-
 /**
  * Capture mixed Python and native frames - ASYNC-SIGNAL-SAFE
  *
  * This interleaves Python frames with native C frames to provide a complete
  * picture of the call stack.
+ *
+ * ASYNC-SIGNAL-SAFE: Uses internal API for Python frames and libunwind/backtrace
+ * for native frames.
  *
  * @param python_frames  Output array for Python frame code pointers
  * @param native_stack   Output structure for native frame data
@@ -379,8 +331,6 @@ void framewalker_capture_mixed(
     }
 }
 
-#endif /* SPPROF_USE_INTERNAL_API */
-
 /*
  * =============================================================================
  * Debug Utilities
@@ -401,19 +351,21 @@ void framewalker_debug_print(void) {
             unwind_available() ? "available" : "not available",
             g_native_unwinding_enabled);
     
-#ifdef SPPROF_USE_INTERNAL_API
     fprintf(stderr, "  Using internal API: YES\n");
-    #if SPPROF_PY311
+#if SPPROF_PY39
+    fprintf(stderr, "  Python version: 3.9.x\n");
+#elif SPPROF_PY310
+    fprintf(stderr, "  Python version: 3.10.x\n");
+#elif SPPROF_PY311
     fprintf(stderr, "  Python version: 3.11.x\n");
-    #elif SPPROF_PY312
+#elif SPPROF_PY312
     fprintf(stderr, "  Python version: 3.12.x\n");
-    #elif SPPROF_PY313
+#elif SPPROF_PY313
     fprintf(stderr, "  Python version: 3.13.x\n");
-    #elif SPPROF_PY314
+#elif SPPROF_PY314
     fprintf(stderr, "  Python version: 3.14.x\n");
-    #endif
 #else
-    fprintf(stderr, "  Using internal API: NO (public API: %s)\n", WALKER_VERSION);
+    fprintf(stderr, "  Python version: unknown\n");
 #endif
 }
 

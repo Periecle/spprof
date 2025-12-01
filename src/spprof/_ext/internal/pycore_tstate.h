@@ -86,11 +86,11 @@ extern "C" {
  * PyThreadState_GetUnchecked() which may return NULL if no thread state
  * is associated with the current thread. Callers must handle NULL.
  *
- * Note: For Python 3.13+, we use PyThreadState_GetUnchecked() which is the
- * safest option for signal handlers. Unlike PyThreadState_Get(), it:
- *   - Returns NULL instead of raising if no thread state exists
- *   - Does not acquire locks on free-threaded builds
- *   - Is a simple TLS read on all builds
+ * Version-specific behavior:
+ *   - Python 3.9-3.12: PyThreadState_GET() is a direct TLS read (safe)
+ *   - Python 3.13+: PyThreadState_GetUnchecked() avoids locks (safe)
+ *
+ * ASYNC-SIGNAL-SAFE: Direct TLS read on all versions.
  */
 static inline PyThreadState*
 _spprof_tstate_get(void) {
@@ -102,17 +102,15 @@ _spprof_tstate_get(void) {
      * acquire internal locks which is NOT async-signal-safe. Using
      * GetUnchecked avoids this - it's a direct TLS read that returns NULL
      * if no thread state exists (rather than raising an exception).
-     *
-     * This function was added in Python 3.9, so it's available for all
-     * versions we support that reach this code path.
      */
     return PyThreadState_GetUnchecked();
-#elif PY_VERSION_HEX >= 0x030B0000
-    /* Python 3.11-3.12: PyThreadState_GET() reads from _Py_tss_tstate
-     * This is async-signal-safe as it's a direct TLS access */
-    return PyThreadState_GET();
 #else
-    /* Older versions - shouldn't reach here (we require 3.11+) */
+    /*
+     * Python 3.9-3.12: PyThreadState_GET() reads from _Py_tss_tstate
+     * This is async-signal-safe as it's a direct TLS access.
+     *
+     * Note: PyThreadState_GET() is a macro that expands to a TLS read.
+     */
     return PyThreadState_GET();
 #endif
 }
@@ -247,11 +245,16 @@ _spprof_capture_frames_unsafe(uintptr_t *frames, int max_frames) {
         return 0;
     }
 
-    /* Get current interpreter frame */
-    _spprof_InterpreterFrame *frame = _spprof_get_current_frame(tstate);
-    
     int count = 0;
     int safety_limit = SPPROF_FRAME_WALK_LIMIT;
+
+#if SPPROF_PY39 || SPPROF_PY310
+    /*
+     * Python 3.9/3.10: Use PyFrameObject via tstate->frame
+     *
+     * ASYNC-SIGNAL-SAFE: Direct struct access, no Python API calls.
+     */
+    _spprof_PyFrameObject *frame = _spprof_get_current_frame(tstate);
     
     while (frame != NULL && count < max_frames && safety_limit-- > 0) {
         /* Validate frame pointer */
@@ -268,6 +271,31 @@ _spprof_capture_frames_unsafe(uintptr_t *frames, int max_frames) {
         /* Move to previous frame */
         frame = _spprof_frame_get_previous(frame);
     }
+#else
+    /*
+     * Python 3.11+: Use _PyInterpreterFrame via cframe or current_frame
+     *
+     * ASYNC-SIGNAL-SAFE: Direct struct access, no Python API calls
+     * (except PyCode_Check on 3.13+ which is unavoidable).
+     */
+    _spprof_InterpreterFrame *frame = _spprof_get_current_frame(tstate);
+    
+    while (frame != NULL && count < max_frames && safety_limit-- > 0) {
+        /* Validate frame pointer */
+        if (!_spprof_ptr_valid(frame)) {
+            break;
+        }
+        
+        /* Get code object pointer */
+        PyCodeObject *code = _spprof_frame_get_code(frame);
+        if (_spprof_ptr_valid(code)) {
+            frames[count++] = (uintptr_t)code;
+        }
+        
+        /* Move to previous frame */
+        frame = _spprof_frame_get_previous(frame);
+    }
+#endif
     
     return count;
 }
@@ -311,11 +339,48 @@ _spprof_capture_frames_with_instr_unsafe(
         return 0;
     }
 
-    /* Get current interpreter frame */
-    _spprof_InterpreterFrame *frame = _spprof_get_current_frame(tstate);
-    
     int count = 0;
     int safety_limit = SPPROF_FRAME_WALK_LIMIT;
+
+#if SPPROF_PY39 || SPPROF_PY310
+    /*
+     * Python 3.9/3.10: Use PyFrameObject via tstate->frame
+     *
+     * Note: Python 3.9/3.10 don't have shim frames, so no skip logic needed.
+     *
+     * ASYNC-SIGNAL-SAFE: Direct struct access, no Python API calls.
+     */
+    _spprof_PyFrameObject *frame = _spprof_get_current_frame(tstate);
+    
+    while (frame != NULL && count < max_frames && safety_limit-- > 0) {
+        /* Validate frame pointer */
+        if (!_spprof_ptr_valid(frame)) {
+            break;
+        }
+        
+        /* Get code object pointer */
+        PyCodeObject *code = _spprof_frame_get_code(frame);
+        if (_spprof_ptr_valid(code)) {
+            code_ptrs[count] = (uintptr_t)code;
+            
+            /* Get instruction pointer for line number resolution */
+            void *instr = _spprof_frame_get_instr_ptr(frame);
+            instr_ptrs[count] = _spprof_ptr_valid(instr) ? (uintptr_t)instr : 0;
+            
+            count++;
+        }
+        
+        /* Move to previous frame */
+        frame = _spprof_frame_get_previous(frame);
+    }
+#else
+    /*
+     * Python 3.11+: Use _PyInterpreterFrame via cframe or current_frame
+     *
+     * ASYNC-SIGNAL-SAFE: Direct struct access, no Python API calls
+     * (except PyCode_Check on 3.13+ which is unavoidable).
+     */
+    _spprof_InterpreterFrame *frame = _spprof_get_current_frame(tstate);
     
     while (frame != NULL && count < max_frames && safety_limit-- > 0) {
         /* Validate frame pointer */
@@ -344,6 +409,7 @@ _spprof_capture_frames_with_instr_unsafe(
         /* Move to previous frame */
         frame = _spprof_frame_get_previous(frame);
     }
+#endif
     
     return count;
 }
@@ -363,6 +429,9 @@ typedef struct {
  *
  * This variant captures both the code object and instruction pointer,
  * enabling more precise line number resolution.
+ *
+ * ASYNC-SIGNAL-SAFE: Direct struct access, no Python API calls
+ * (except PyCode_Check on 3.13+ which is unavoidable).
  */
 static inline int
 _spprof_capture_frames_extended(
@@ -378,10 +447,37 @@ _spprof_capture_frames_extended(
         return 0;
     }
 
-    _spprof_InterpreterFrame *frame = _spprof_get_current_frame(tstate);
-    
     int count = 0;
     int safety_limit = SPPROF_FRAME_WALK_LIMIT;
+
+#if SPPROF_PY39 || SPPROF_PY310
+    /*
+     * Python 3.9/3.10: Use PyFrameObject via tstate->frame
+     */
+    _spprof_PyFrameObject *frame = _spprof_get_current_frame(tstate);
+    
+    while (frame != NULL && count < max_frames && safety_limit-- > 0) {
+        if (!_spprof_ptr_valid(frame)) {
+            break;
+        }
+        
+        /* Python 3.9/3.10 don't have shim frames, no skip needed */
+        
+        PyCodeObject *code = _spprof_frame_get_code(frame);
+        if (_spprof_ptr_valid(code)) {
+            frames[count].code_ptr = (uintptr_t)code;
+            frames[count].instr_ptr = (uintptr_t)_spprof_frame_get_instr_ptr(frame);
+            frames[count].owner = _spprof_frame_get_owner(frame);
+            count++;
+        }
+        
+        frame = _spprof_frame_get_previous(frame);
+    }
+#else
+    /*
+     * Python 3.11+: Use _PyInterpreterFrame
+     */
+    _spprof_InterpreterFrame *frame = _spprof_get_current_frame(tstate);
     
     while (frame != NULL && count < max_frames && safety_limit-- > 0) {
         if (!_spprof_ptr_valid(frame)) {
@@ -403,6 +499,7 @@ _spprof_capture_frames_extended(
         
         frame = _spprof_frame_get_previous(frame);
     }
+#endif
     
     return count;
 }
@@ -518,11 +615,37 @@ _spprof_capture_frames_from_tstate(
         return 0;
     }
     
-    /* Get current interpreter frame from the thread state */
-    _spprof_InterpreterFrame *frame = _spprof_get_current_frame(tstate);
-    
     int count = 0;
     int safety_limit = SPPROF_FRAME_WALK_LIMIT;
+
+#if SPPROF_PY39 || SPPROF_PY310
+    /*
+     * Python 3.9/3.10: Use PyFrameObject via tstate->frame
+     */
+    _spprof_PyFrameObject *frame = _spprof_get_current_frame(tstate);
+    
+    while (frame != NULL && count < max_frames && safety_limit-- > 0) {
+        /* Validate frame pointer */
+        if (!_spprof_ptr_valid(frame)) {
+            break;
+        }
+        
+        /* Python 3.9/3.10 don't have shim frames */
+        
+        /* Get code object pointer */
+        PyCodeObject *code = _spprof_frame_get_code(frame);
+        if (_spprof_ptr_valid(code)) {
+            frames[count++] = (uintptr_t)code;
+        }
+        
+        /* Move to previous frame */
+        frame = _spprof_frame_get_previous(frame);
+    }
+#else
+    /*
+     * Python 3.11+: Use _PyInterpreterFrame
+     */
+    _spprof_InterpreterFrame *frame = _spprof_get_current_frame(tstate);
     
     while (frame != NULL && count < max_frames && safety_limit-- > 0) {
         /* Validate frame pointer */
@@ -545,6 +668,7 @@ _spprof_capture_frames_from_tstate(
         /* Move to previous frame */
         frame = _spprof_frame_get_previous(frame);
     }
+#endif
     
     return count;
 }
@@ -581,11 +705,41 @@ _spprof_capture_frames_with_instr_from_tstate(
         return 0;
     }
     
-    /* Get current interpreter frame */
-    _spprof_InterpreterFrame *frame = _spprof_get_current_frame(tstate);
-    
     int count = 0;
     int safety_limit = SPPROF_FRAME_WALK_LIMIT;
+
+#if SPPROF_PY39 || SPPROF_PY310
+    /*
+     * Python 3.9/3.10: Use PyFrameObject via tstate->frame
+     */
+    _spprof_PyFrameObject *frame = _spprof_get_current_frame(tstate);
+    
+    while (frame != NULL && count < max_frames && safety_limit-- > 0) {
+        if (!_spprof_ptr_valid(frame)) {
+            break;
+        }
+        
+        /* Python 3.9/3.10 don't have shim frames */
+        
+        /* Get code object pointer */
+        PyCodeObject *code = _spprof_frame_get_code(frame);
+        if (_spprof_ptr_valid(code)) {
+            code_ptrs[count] = (uintptr_t)code;
+            
+            /* Get instruction pointer for line number resolution */
+            void *instr = _spprof_frame_get_instr_ptr(frame);
+            instr_ptrs[count] = _spprof_ptr_valid(instr) ? (uintptr_t)instr : 0;
+            
+            count++;
+        }
+        
+        frame = _spprof_frame_get_previous(frame);
+    }
+#else
+    /*
+     * Python 3.11+: Use _PyInterpreterFrame
+     */
+    _spprof_InterpreterFrame *frame = _spprof_get_current_frame(tstate);
     
     while (frame != NULL && count < max_frames && safety_limit-- > 0) {
         if (!_spprof_ptr_valid(frame)) {
@@ -612,6 +766,7 @@ _spprof_capture_frames_with_instr_from_tstate(
         
         frame = _spprof_frame_get_previous(frame);
     }
+#endif
     
     return count;
 }
