@@ -71,7 +71,7 @@ def run_threading_benchmark() -> dict:
     print("Threading Overhead Benchmark")
     print("=" * 60)
 
-    from benchmarks.threading import measure_threading_overhead
+    from benchmarks.thread_overhead import measure_threading_overhead
 
     results = []
     for num_threads in [2, 4, 8]:

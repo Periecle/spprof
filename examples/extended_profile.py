@@ -15,15 +15,14 @@ Output:
 """
 
 import hashlib
-import math
-import re
-import sys
 import json
-import zlib
-import struct
+import math
 import random
+import re
+import struct
+import sys
+import zlib
 from pathlib import Path
-from typing import List, Tuple
 
 
 # Add src to path for development
@@ -35,6 +34,7 @@ import spprof
 # =============================================================================
 # Pure Python Workloads (visible in Python frames)
 # =============================================================================
+
 
 def fibonacci_iterative(n: int) -> int:
     """Iterative Fibonacci - less stack depth but CPU intensive."""
@@ -53,7 +53,7 @@ def fibonacci_recursive(n: int) -> int:
     return fibonacci_recursive(n - 1) + fibonacci_recursive(n - 2)
 
 
-def matrix_multiply(a: List[List[float]], b: List[List[float]]) -> List[List[float]]:
+def matrix_multiply(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
     """Pure Python matrix multiplication."""
     n = len(a)
     m = len(b[0])
@@ -61,17 +61,17 @@ def matrix_multiply(a: List[List[float]], b: List[List[float]]) -> List[List[flo
     result = [[0.0] * m for _ in range(n)]
     for i in range(n):
         for j in range(m):
-            for l in range(k):
-                result[i][j] += a[i][l] * b[l][j]
+            for idx in range(k):
+                result[i][j] += a[i][idx] * b[idx][j]
     return result
 
 
-def create_random_matrix(rows: int, cols: int) -> List[List[float]]:
+def create_random_matrix(rows: int, cols: int) -> list[list[float]]:
     """Create a random matrix."""
     return [[random.random() for _ in range(cols)] for _ in range(rows)]
 
 
-def quicksort(arr: List[int]) -> List[int]:
+def quicksort(arr: list[int]) -> list[int]:
     """Pure Python quicksort implementation."""
     if len(arr) <= 1:
         return arr
@@ -82,7 +82,7 @@ def quicksort(arr: List[int]) -> List[int]:
     return quicksort(left) + middle + quicksort(right)
 
 
-def merge_sort(arr: List[int]) -> List[int]:
+def merge_sort(arr: list[int]) -> list[int]:
     """Pure Python merge sort implementation."""
     if len(arr) <= 1:
         return arr
@@ -92,7 +92,7 @@ def merge_sort(arr: List[int]) -> List[int]:
     return merge(left, right)
 
 
-def merge(left: List[int], right: List[int]) -> List[int]:
+def merge(left: list[int], right: list[int]) -> list[int]:
     """Merge two sorted lists."""
     result = []
     i = j = 0
@@ -116,13 +116,10 @@ def is_prime(n: int) -> bool:
         return True
     if n % 2 == 0:
         return False
-    for i in range(3, int(n**0.5) + 1, 2):
-        if n % i == 0:
-            return False
-    return True
+    return all(n % i != 0 for i in range(3, int(n**0.5) + 1, 2))
 
 
-def find_primes_in_range(start: int, end: int) -> List[int]:
+def find_primes_in_range(start: int, end: int) -> list[int]:
     """Find all primes in a range."""
     return [n for n in range(start, end) if is_prime(n)]
 
@@ -130,6 +127,7 @@ def find_primes_in_range(start: int, end: int) -> List[int]:
 # =============================================================================
 # Native Library Workloads (calls into C libraries)
 # =============================================================================
+
 
 def intensive_math_operations(iterations: int) -> float:
     """Intensive math operations using C math library."""
@@ -149,7 +147,7 @@ def intensive_math_operations(iterations: int) -> float:
     return result
 
 
-def intensive_hashing(data: bytes, iterations: int) -> List[bytes]:
+def intensive_hashing(data: bytes, iterations: int) -> list[bytes]:
     """Intensive hashing operations using OpenSSL/CommonCrypto."""
     results = []
     for i in range(iterations):
@@ -158,16 +156,16 @@ def intensive_hashing(data: bytes, iterations: int) -> List[bytes]:
         h256.update(data)
         h256.update(str(i).encode())
         digest256 = h256.digest()
-        
+
         # SHA-512 (C implementation)
         h512 = hashlib.sha512()
         h512.update(data)
         h512.update(digest256)
-        
+
         # MD5 (C implementation)
         hmd5 = hashlib.md5()
         hmd5.update(h512.digest())
-        
+
         results.append(hmd5.digest())
     return results
 
@@ -175,16 +173,16 @@ def intensive_hashing(data: bytes, iterations: int) -> List[bytes]:
 def intensive_regex(text: str, iterations: int) -> int:
     """Intensive regex operations using C regex engine."""
     patterns = [
-        r"\b\w{4,}\b",          # Words with 4+ chars
-        r"[aeiou]+",            # Vowel sequences
-        r"\s+",                 # Whitespace
-        r"[A-Z][a-z]*",         # Capitalized words
-        r"\d+",                 # Numbers
-        r"[.,!?;:]",            # Punctuation
-        r"\b(the|and|of)\b",    # Common words
+        r"\b\w{4,}\b",  # Words with 4+ chars
+        r"[aeiou]+",  # Vowel sequences
+        r"\s+",  # Whitespace
+        r"[A-Z][a-z]*",  # Capitalized words
+        r"\d+",  # Numbers
+        r"[.,!?;:]",  # Punctuation
+        r"\b(the|and|of)\b",  # Common words
         r"[bcdfghjklmnpqrstvwxyz]+",  # Consonant sequences
     ]
-    
+
     total_matches = 0
     for _ in range(iterations):
         for pattern in patterns:
@@ -193,76 +191,76 @@ def intensive_regex(text: str, iterations: int) -> int:
     return total_matches
 
 
-def intensive_compression(data: bytes, iterations: int) -> Tuple[int, int]:
+def intensive_compression(data: bytes, iterations: int) -> tuple[int, int]:
     """Intensive compression/decompression using zlib (C library)."""
     total_compressed = 0
     total_decompressed = 0
-    
+
     for i in range(iterations):
         # Modify data slightly each iteration
         modified = data + str(i).encode()
-        
+
         # Compress
         compressed = zlib.compress(modified, level=6)
         total_compressed += len(compressed)
-        
+
         # Decompress
         decompressed = zlib.decompress(compressed)
         total_decompressed += len(decompressed)
-    
+
     return total_compressed, total_decompressed
 
 
 def intensive_json_operations(iterations: int) -> int:
     """Intensive JSON encoding/decoding (C extension in Python 3.x)."""
     total_size = 0
-    
+
     for i in range(iterations):
         # Create complex nested structure
         data = {
             "id": i,
             "name": f"item_{i}",
             "values": [x * 0.1 for x in range(100)],
-            "nested": {
-                "level1": {
-                    "level2": {
-                        "level3": {"data": list(range(50))}
-                    }
-                }
-            },
+            "nested": {"level1": {"level2": {"level3": {"data": list(range(50))}}}},
             "tags": [f"tag_{j}" for j in range(20)],
         }
-        
+
         # Encode to JSON (C extension)
         encoded = json.dumps(data)
         total_size += len(encoded)
-        
+
         # Decode from JSON (C extension)
         decoded = json.loads(encoded)
         total_size += len(str(decoded))
-    
+
     return total_size
 
 
 def intensive_struct_packing(iterations: int) -> int:
     """Intensive struct packing/unpacking (C module)."""
     total_bytes = 0
-    
+
     for i in range(iterations):
         # Pack various types
         packed = struct.pack(
-            '<iIhHbBfddQ',
-            i, i * 2, i % 32768, i % 65536,
-            i % 128, i % 256,
-            float(i), float(i) * 1.5, float(i) * 2.0,
-            i * 100
+            "<iIhHbBfddQ",
+            i,
+            i * 2,
+            i % 32768,
+            i % 65536,
+            i % 128,
+            i % 256,
+            float(i),
+            float(i) * 1.5,
+            float(i) * 2.0,
+            i * 100,
         )
         total_bytes += len(packed)
-        
+
         # Unpack
-        unpacked = struct.unpack('<iIhHbBfddQ', packed)
+        unpacked = struct.unpack("<iIhHbBfddQ", packed)
         total_bytes += len(unpacked)
-    
+
     return total_bytes
 
 
@@ -270,29 +268,30 @@ def intensive_struct_packing(iterations: int) -> int:
 # Workload Runner
 # =============================================================================
 
+
 def run_python_workloads(duration_hint: int = 3):
     """Run pure Python workloads."""
     print("  [Python] Running recursive Fibonacci...")
     for i in range(30):
         fibonacci_recursive(i)
-    
+
     print("  [Python] Running iterative Fibonacci...")
     for _ in range(1000):
         for i in range(100):
             fibonacci_iterative(i)
-    
+
     print("  [Python] Running matrix operations...")
     for _ in range(50):
         a = create_random_matrix(30, 30)
         b = create_random_matrix(30, 30)
         matrix_multiply(a, b)
-    
+
     print("  [Python] Running sorting algorithms...")
     for _ in range(100):
         arr = [random.randint(0, 10000) for _ in range(500)]
         quicksort(arr.copy())
         merge_sort(arr.copy())
-    
+
     print("  [Python] Finding primes...")
     for _ in range(10):
         find_primes_in_range(2, 10000)
@@ -302,28 +301,31 @@ def run_native_workloads(duration_hint: int = 7):
     """Run workloads that call into native C libraries."""
     print("  [Native] Running math operations...")
     intensive_math_operations(500000)
-    
+
     print("  [Native] Running hash operations...")
     data = b"x" * 2000
     intensive_hashing(data, 10000)
-    
+
     print("  [Native] Running regex operations...")
-    text = """
+    text = (
+        """
     The quick brown fox jumps over the lazy dog.
     Pack my box with five dozen liquor jugs.
     How vexingly quick daft zebras jump!
     The five boxing wizards jump quickly.
     Jackdaws love my big sphinx of quartz.
-    """ * 50
+    """
+        * 50
+    )
     intensive_regex(text, 200)
-    
+
     print("  [Native] Running compression operations...")
     data = b"Sample data for compression. " * 500
     intensive_compression(data, 500)
-    
+
     print("  [Native] Running JSON operations...")
     intensive_json_operations(2000)
-    
+
     print("  [Native] Running struct operations...")
     intensive_struct_packing(50000)
 
@@ -331,6 +333,7 @@ def run_native_workloads(duration_hint: int = 7):
 # =============================================================================
 # Main
 # =============================================================================
+
 
 def main():
     print("=" * 70)
@@ -416,36 +419,36 @@ def main():
     print(f"Collapsed profile saved: {collapsed_path}")
 
     # Generate SVG flamegraph if flamegraph.pl is available
-    import subprocess
     import shutil
-    
+    import subprocess
+
     svg_path = output_dir / "extended_profile.svg"
-    
+
     # Try common locations for flamegraph.pl
     flamegraph_locations = [
         "/tmp/flamegraph.pl",
         "/usr/local/bin/flamegraph.pl",
         shutil.which("flamegraph.pl"),
     ]
-    
+
     flamegraph_script = None
     for loc in flamegraph_locations:
         if loc and Path(loc).exists():
             flamegraph_script = loc
             break
-    
+
     if flamegraph_script:
         print(f"\nGenerating SVG flamegraph using {flamegraph_script}...")
         try:
-            with open(collapsed_path, 'r') as f_in:
+            with collapsed_path.open() as f_in:
                 result = subprocess.run(
-                    ['perl', flamegraph_script, '--title', 'spprof Extended Profile'],
+                    ["perl", flamegraph_script, "--title", "spprof Extended Profile"],
                     stdin=f_in,
                     capture_output=True,
-                    text=True
+                    text=True,
                 )
                 if result.returncode == 0:
-                    with open(svg_path, 'w') as f_out:
+                    with svg_path.open("w") as f_out:
                         f_out.write(result.stdout)
                     print(f"SVG flamegraph saved: {svg_path}")
                 else:
@@ -460,10 +463,11 @@ def main():
     print("\n" + "=" * 70)
     print("Sample Stack Traces (5 random samples):")
     print("=" * 70)
-    
+
     import random
+
     sample_indices = random.sample(range(len(profile.samples)), min(5, len(profile.samples)))
-    
+
     for idx in sample_indices:
         sample = profile.samples[idx]
         print(f"\n  Sample {idx + 1} (thread {sample.thread_id}):")
@@ -486,4 +490,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

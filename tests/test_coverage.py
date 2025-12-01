@@ -482,18 +482,29 @@ def test_profile_property_before_exit():
 def test_start_with_unwritable_path():
     """Test start() with unwritable output path raises an error."""
     import platform
+    import tempfile
+    from pathlib import Path
 
     import spprof
 
     # Use platform-appropriate paths that should fail
     if platform.system() == "Windows":
-        # Windows: Try to write to a protected system path
-        bad_path = "C:\\Windows\\System32\\spprof_test_file.json"
+        # Windows: Use invalid characters in path which always fails
+        # Characters like < > : " | ? * are invalid in Windows filenames
+        bad_path = "C:\\invalid<path>\\test.json"
     else:
         # Unix: Try to write to root-owned directory
         bad_path = "/root/spprof_test_file.json"
+        # Fallback: if running as root (CI), use a read-only directory
+        import os
 
-    # Should raise PermissionError or OSError (FileNotFoundError on some systems)
+        if os.geteuid() == 0:
+            # Create a read-only temp directory
+            tmpdir = Path(tempfile.mkdtemp())
+            tmpdir.chmod(0o444)
+            bad_path = str(tmpdir / "test.json")
+
+    # Should raise PermissionError or OSError
     with pytest.raises((PermissionError, OSError)):
         spprof.start(interval_ms=10, output_path=bad_path)
 

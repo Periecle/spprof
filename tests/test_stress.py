@@ -10,7 +10,6 @@ These tests verify profiler stability under extreme conditions:
 
 import gc
 import platform
-import sys
 import threading
 import time
 import weakref
@@ -25,7 +24,7 @@ class TestRapidStartStop:
         """100 rapid start/stop cycles without delay."""
         import spprof
 
-        for i in range(100):
+        for _ in range(100):
             spprof.start(interval_ms=10)
             profile = spprof.stop()
             assert profile is not None
@@ -226,9 +225,7 @@ class TestThreadDeathDuringSampling:
         assert profile is not None
         assert len(results) == 10
 
-    @pytest.mark.skipif(
-        platform.system() != "Linux", reason="Linux-specific thread timing"
-    )
+    @pytest.mark.skipif(platform.system() != "Linux", reason="Linux-specific thread timing")
     def test_thread_death_race_condition(self):
         """Stress test for thread death during timer fire."""
         import spprof
@@ -496,9 +493,7 @@ class TestAggregationStress:
 
         spprof.start(interval_ms=5)
 
-        threads = [
-            threading.Thread(target=worker, name=f"Worker-{i}") for i in range(3)
-        ]
+        threads = [threading.Thread(target=worker, name=f"Worker-{i}") for i in range(3)]
         for t in threads:
             t.start()
         for t in threads:
@@ -512,4 +507,3 @@ class TestAggregationStress:
             thread_ids = {s.thread_id for s in profile.samples}
             agg_thread_ids = {s.thread_id for s in agg.stacks}
             assert agg_thread_ids.issubset(thread_ids)
-

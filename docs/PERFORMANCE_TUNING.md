@@ -550,3 +550,4 @@ print(f"Samples collected: {profile.sample_count}")
 - [ ] Threads registered (Linux)
 - [ ] Aggregation used for analysis of large profiles
 
+

@@ -51,12 +51,12 @@ def _capture_native_stack() -> list[dict[str, Any]]:
 
 def _set_safe_mode(enabled: bool) -> None:
     """Enable or disable safe mode for code validation.
-    
+
     When safe mode is enabled, code objects captured without holding a
     reference (signal-handler samples on Linux) will be discarded rather
     than validated via PyCode_Check. This trades sample completeness for
     guaranteed memory safety.
-    
+
     Note: Darwin/Mach samples are always safe (INCREF'd during capture).
     Safe mode only affects Linux signal-handler samples.
     """
@@ -68,7 +68,7 @@ def _is_safe_mode() -> bool:
 
 def _get_code_registry_stats() -> dict[str, Any]:
     """Get code registry statistics including safe mode rejects.
-    
+
     Returns a dict with:
         - refs_held: Number of references currently held
         - refs_added: Total references added

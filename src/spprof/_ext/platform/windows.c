@@ -1006,6 +1006,11 @@ int signal_handler_uninstall(int signum) {
     return 0;
 }
 
+int signal_handler_in_context(void) {
+    /* Windows doesn't use signal handlers, so we're never in signal context */
+    return 0;
+}
+
 /*
  * =============================================================================
  * Debug Support

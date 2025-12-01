@@ -107,7 +107,7 @@ def to_collapsed(profile: Profile, mark_native: bool = True) -> str:
     https://github.com/brendangregg/FlameGraph
 
     Format: frame1;frame2;...;frameN count
-    
+
     Stack order is root → leaf (bottom of flame → top of flame).
 
     Args:
@@ -133,7 +133,7 @@ def to_collapsed(profile: Profile, mark_native: bool = True) -> str:
                 func_name = f"[native] {frame.function_name}"
             else:
                 func_name = frame.function_name
-            
+
             # Add file:line for Python frames, just function name for native
             if frame.filename and frame.lineno and not frame.is_native:
                 stack_parts.append(f"{func_name} ({frame.filename}:{frame.lineno})")
@@ -199,8 +199,7 @@ def aggregated_to_speedscope(profile: AggregatedProfile) -> dict[str, Any]:
         for stack in thread_stacks:
             # Build frame stack (indices)
             stack_indices = [
-                get_frame_index(f.function_name, f.filename, f.lineno)
-                for f in stack.frames
+                get_frame_index(f.function_name, f.filename, f.lineno) for f in stack.frames
             ]
             # Expand: each count becomes a sample
             for _ in range(stack.count):

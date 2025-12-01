@@ -388,22 +388,22 @@ def stop() -> Profile:
             # Get final stats before stopping (includes dropped_samples)
             final_stats = _native._get_stats()
             dropped_count = final_stats.get("dropped_samples", 0) if final_stats else 0
-            
+
             # Use streaming API to avoid OOM for long profiling sessions
             # Stop the timer first, then drain in chunks
             if hasattr(_native, "_stop_timer") and hasattr(_native, "_drain_buffer"):
                 _native._stop_timer()
-                
+
                 # Drain samples in chunks to avoid memory spike
                 all_raw_samples: list[dict[str, Any]] = []
                 batch_size = 10000  # Process 10k samples at a time
-                
+
                 while True:
                     batch, has_more = _native._drain_buffer(batch_size)
                     all_raw_samples.extend(batch)
                     if not has_more:
                         break
-                
+
                 _native._finalize_stop()
                 samples = _convert_raw_samples(all_raw_samples)
             else:
@@ -460,7 +460,7 @@ def stats() -> ProfilerStats | None:
         raw_stats = _native._get_stats()
         collected = raw_stats.get("collected_samples", 0)
         duration_ms = raw_stats.get("duration_ns", 0) / 1_000_000
-        
+
         # Estimate overhead: (samples * avg_handler_time_us) / duration
         # Using 25μs per sample as conservative estimate (includes frame walking,
         # ring buffer write, and signal dispatch overhead)
@@ -469,7 +469,7 @@ def stats() -> ProfilerStats | None:
             overhead_estimate_pct = (collected * avg_handler_time_ms) / duration_ms * 100
         else:
             overhead_estimate_pct = 0.0
-        
+
         return ProfilerStats(
             collected_samples=collected,
             dropped_samples=raw_stats.get("dropped_samples", 0),

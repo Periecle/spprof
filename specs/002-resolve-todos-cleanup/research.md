@@ -183,3 +183,4 @@ This file is a backup from the thread registry implementation and is no longer n
 | Port Linux signal-drain to macOS | Proven pattern; POSIX-compatible | Low |
 | Delete backup file | In git history; not needed | None |
 
+
