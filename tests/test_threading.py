@@ -144,9 +144,15 @@ def test_thread_terminates_during_profiling():
     assert profile is not None
 
 
-@pytest.mark.skipif(platform.system() != "Linux", reason="Linux-specific multi-thread test")
+@pytest.mark.skipif(platform.system() != "Linux", 
+                    reason="Linux-specific multi-thread test")
 def test_main_thread_blocked_other_sampled():
-    """Verify other threads are sampled when main thread is blocked."""
+    """Verify other threads are sampled when main thread is blocked.
+    
+    On Linux with timer_create, each thread has its own timer.
+    On macOS, setitimer(ITIMER_PROF) is process-wide and doesn't provide
+    per-thread sampling when the main thread is blocked.
+    """
     import spprof
 
     result = []
@@ -176,7 +182,8 @@ def test_main_thread_blocked_other_sampled():
     assert profile is not None
 
 
-@pytest.mark.skipif(platform.system() != "Linux", reason="Linux-specific thread registry test")
+@pytest.mark.skipif(platform.system() != "Linux", 
+                    reason="Linux-specific thread registry test")
 def test_many_threads():
     """Test profiling with more than 256 threads (old limit).
 
@@ -204,7 +211,8 @@ def test_many_threads():
     assert profile is not None
 
 
-@pytest.mark.skipif(platform.system() != "Linux", reason="Linux-specific thread churn test")
+@pytest.mark.skipif(platform.system() != "Linux", 
+                    reason="Linux-specific thread churn test")
 def test_rapid_thread_churn():
     """Test rapid thread creation/destruction.
 

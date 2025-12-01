@@ -19,6 +19,36 @@
  * NOTE: This file is only compiled on POSIX systems (Linux, macOS).
  * Windows has its own implementation in platform/windows.c.
  *
+ * FREE-THREADING WARNING (Py_GIL_DISABLED):
+ *
+ * Signal-based sampling is NOT SAFE for free-threaded Python builds because:
+ *
+ *   1. FRAME CHAIN INSTABILITY:
+ *      In GIL-enabled builds, the GIL ensures frame chains are stable when
+ *      a signal interrupts execution. In free-threaded builds, the interrupted
+ *      thread could be in the middle of a function call/return, with the
+ *      frame->previous pointer in an inconsistent state.
+ *
+ *   2. NO SYNCHRONIZATION AVAILABLE:
+ *      We cannot acquire locks in a signal handler (not async-signal-safe).
+ *      We cannot use Python's critical sections (requires Python API).
+ *      We cannot ensure the frame chain is consistent.
+ *
+ *   3. RACE CONDITIONS:
+ *      Reading frame->previous while the thread modifies it can result in:
+ *      - Reading a half-updated pointer → crash
+ *      - Following a stale pointer to freed memory → crash
+ *      - Infinite loops if chain becomes circular
+ *
+ * On Darwin/macOS, we use Mach-based sampling instead (darwin_mach.c) which
+ * suspends threads before reading their state. This is safe for free-threading.
+ *
+ * On Linux with free-threaded Python, signal-based sampling is disabled.
+ * Future alternatives could include:
+ *   - PEP 669 profiling callbacks (cooperative, at safe points)
+ *   - perf_event_open with PEBS (hardware-assisted)
+ *   - eBPF-based sampling
+ *
  * Copyright (c) 2024 spprof contributors
  * SPDX-License-Identifier: MIT
  */
@@ -43,9 +73,30 @@
 #include "framewalker.h"
 #include "unwind.h"
 
+/* Note: Darwin uses Mach-based sampler (darwin_mach.c) instead of signals.
+ * This file is still compiled on Darwin for compatibility but the signal
+ * handler is not used. */
+
 #ifdef SPPROF_USE_INTERNAL_API
 #include "internal/pycore_frame.h"
 #include "internal/pycore_tstate.h"
+#endif
+
+/*
+ * FREE-THREADING SAFETY CHECK
+ *
+ * On free-threaded builds (Py_GIL_DISABLED) on non-Darwin platforms,
+ * signal-based sampling is unsafe. The SPPROF_FREE_THREADING_SAFE macro
+ * is defined in pycore_frame.h based on the platform and build configuration.
+ *
+ * Darwin uses Mach-based sampling (darwin_mach.c) which is safe.
+ * This file is still compiled but the handler is effectively disabled.
+ */
+#ifdef SPPROF_USE_INTERNAL_API
+#if !SPPROF_FREE_THREADING_SAFE
+    /* Signal handler will return immediately without capturing frames */
+    #define SPPROF_SIGNAL_HANDLER_DISABLED 1
+#endif
 #endif
 
 /*
@@ -192,11 +243,29 @@ capture_native_stack_unsafe(NativeStack* stack, int skip) {
  *   ✓ No mutex locks
  *   ✓ Reentrancy protected
  *   ✓ Uses only stack-allocated storage
+ *
+ * FREE-THREADING:
+ *   On free-threaded builds (Py_GIL_DISABLED) without Darwin/Mach support,
+ *   this handler returns immediately without capturing frames to avoid
+ *   unsafe frame chain walking. See module.c for the user-facing error.
  */
 void spprof_signal_handler(int signum, siginfo_t* info, void* ucontext) {
     (void)signum;
     (void)info;
     (void)ucontext;
+    
+#ifdef SPPROF_SIGNAL_HANDLER_DISABLED
+    /*
+     * FREE-THREADING SAFETY:
+     * Signal-based sampling is disabled on this configuration because
+     * walking the frame chain without the GIL is unsafe. The handler
+     * simply returns without capturing any samples.
+     *
+     * This should never be reached if module.c properly blocks startup,
+     * but serves as a defense-in-depth measure.
+     */
+    return;
+#endif
     
     /* Quick exit if profiler not active */
     if (!g_profiler_active || g_ringbuffer == NULL) {
@@ -219,7 +288,7 @@ void spprof_signal_handler(int signum, siginfo_t* info, void* ucontext) {
     RawSample sample;
     sample.timestamp = timestamp;
     sample.thread_id = thread_id;
-    sample._padding = 0;
+    sample.native_depth = 0;
     
     /* Capture Python frames with instruction pointers for accurate line numbers */
     sample.depth = capture_python_stack_with_instr_unsafe(
@@ -366,6 +435,21 @@ uint64_t signal_handler_samples_dropped(void) {
 
 uint64_t signal_handler_errors(void) {
     return atomic_load(&g_handler_errors);
+}
+
+/**
+ * Check if we're currently executing in signal handler context.
+ *
+ * This is used by debug assertions to enforce the invariant that
+ * certain operations (like acquiring locks) must never occur from
+ * signal context.
+ *
+ * ASYNC-SIGNAL-SAFE: Yes (reads volatile sig_atomic_t).
+ *
+ * @return 1 if in signal handler, 0 otherwise
+ */
+int signal_handler_in_context(void) {
+    return g_in_handler != 0;
 }
 
 /*

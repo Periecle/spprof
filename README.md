@@ -3,21 +3,21 @@
 [![CI](https://github.com/Periecle/spprof/actions/workflows/ci.yml/badge.svg)](https://github.com/Periecle/spprof/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/Periecle/spprof/branch/main/graph/badge.svg)](https://codecov.io/gh/Periecle/spprof)
 [![PyPI version](https://badge.fury.io/py/spprof.svg)](https://badge.fury.io/py/spprof)
-[![Python](https://img.shields.io/pypi/pyversions/spprof.svg)](https://pypi.org/project/spprof/)
+[![Python 3.9–3.14](https://img.shields.io/pypi/pyversions/spprof.svg)](https://pypi.org/project/spprof/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Types: MyPy](https://img.shields.io/badge/types-mypy-blue.svg)](https://mypy-lang.org/)
 
-High-performance sampling profiler for Python applications with Speedscope output.
+A high-performance sampling profiler for Python with [Speedscope](https://www.speedscope.app) and FlameGraph output.
 
 ## Features
 
-- **Low overhead**: < 1% CPU overhead at 10ms sampling interval
-- **Cross-platform**: Linux, macOS, Windows support
-- **Python 3.9–3.14**: Supports all modern Python versions including free-threaded builds
-- **Speedscope output**: Generate flame graphs viewable at [speedscope.app](https://www.speedscope.app)
-- **Container-friendly**: Works in restricted Kubernetes environments (no SYS_PTRACE required)
-- **Multi-threaded**: Automatic profiling of all Python threads
+- **Low overhead** — <1% CPU at 10ms sampling, suitable for production
+- **Mixed-mode profiling** — Capture Python and C extension frames together
+- **Multi-threaded** — Automatic profiling of all Python threads
+- **Memory-efficient** — Stack aggregation for long-running profiles
+- **Cross-platform** — Linux, macOS, Windows
+- **Python 3.9–3.14** — Including free-threaded builds (macOS)
+- **Zero dependencies** — No runtime requirements
+- **Container-friendly** — No `SYS_PTRACE` capability required
 
 ## Installation
 
@@ -25,28 +25,19 @@ High-performance sampling profiler for Python applications with Speedscope outpu
 pip install spprof
 ```
 
-Or from source:
+Build from source:
 
 ```bash
-git clone https://github.com/Periecle/spprof.git
-cd spprof
-pip install -e .
+pip install git+https://github.com/Periecle/spprof.git
 ```
 
 ## Quick Start
 
-### Basic Usage
-
 ```python
 import spprof
 
-# Start profiling
-spprof.start(interval_ms=10)
-
-# Run your workload
-result = expensive_computation()
-
-# Stop and save
+spprof.start()
+# ... your code ...
 profile = spprof.stop()
 profile.save("profile.json")
 
@@ -56,10 +47,8 @@ profile.save("profile.json")
 ### Context Manager
 
 ```python
-import spprof
-
 with spprof.Profiler(interval_ms=5) as p:
-    result = expensive_computation()
+    expensive_computation()
 
 p.profile.save("profile.json")
 ```
@@ -67,149 +56,141 @@ p.profile.save("profile.json")
 ### Decorator
 
 ```python
-import spprof
-
-@spprof.profile(output_path="compute.json")
-def heavy_computation():
-    result = 0
-    for i in range(10_000_000):
-        result += i
-    return result
-
-heavy_computation()  # Profile saved automatically
+@spprof.profile(output_path="func.json")
+def heavy_work():
+    ...
 ```
 
-## Multi-threaded Profiling
+## API
 
-spprof automatically profiles all Python threads:
+### Core Functions
+
+| Function | Description |
+|----------|-------------|
+| `start(interval_ms=10)` | Begin profiling |
+| `stop()` | Stop and return `Profile` |
+| `is_active()` | Check if profiler is running |
+| `stats()` | Get live statistics |
+
+### Thread Management
 
 ```python
-import spprof
-import threading
+# Option 1: Explicit registration (recommended for Linux)
+def worker():
+    spprof.register_thread()
+    try:
+        do_work()
+    finally:
+        spprof.unregister_thread()
 
-def worker(n):
-    total = 0
-    for i in range(n):
-        total += i ** 2
-    return total
-
-spprof.start(interval_ms=5)
-
-threads = [threading.Thread(target=worker, args=(1_000_000,)) for _ in range(4)]
-for t in threads:
-    t.start()
-for t in threads:
-    t.join()
-
-profile = spprof.stop()
-print(f"Collected {len(profile.samples)} samples")
-profile.save("threaded_profile.json")
+# Option 2: Context manager
+def worker():
+    with spprof.ThreadProfiler():
+        do_work()
 ```
 
-## Configuration
+### Native Unwinding
 
-| Parameter | Default | Range | Description |
-|-----------|---------|-------|-------------|
-| `interval_ms` | 10 | 1–1000 | Sampling interval in milliseconds |
-| `output_path` | None | - | Auto-save path (optional) |
-| `memory_limit_mb` | 100 | 16–1024 | Maximum memory usage |
+Capture C/C++ frames alongside Python for debugging extensions:
 
-### Choosing Sample Interval
+```python
+if spprof.native_unwinding_available():
+    spprof.set_native_unwinding(True)
 
-| Interval | Overhead | Use Case |
-|----------|----------|----------|
-| 1 ms | ~3-5% | Short-running scripts, high precision |
-| 10 ms | < 1% | Production profiling (default) |
-| 100 ms | < 0.1% | Long-running monitoring |
+spprof.start()
+```
+
+### Memory-Efficient Aggregation
+
+For long-running profiles with repetitive call patterns:
+
+```python
+profile = spprof.stop()
+aggregated = profile.aggregate()
+
+print(f"Compression: {aggregated.compression_ratio:.1f}x")
+aggregated.save("profile.json")
+```
 
 ## Output Formats
 
 ### Speedscope (default)
 
 ```python
-profile.save("profile.json")  # or format="speedscope"
+profile.save("profile.json")
 ```
 
 Open at [speedscope.app](https://www.speedscope.app) for interactive flame graphs.
 
-### FlameGraph (collapsed stacks)
+### FlameGraph
 
 ```python
 profile.save("profile.collapsed", format="collapsed")
 ```
 
-Use with [FlameGraph](https://github.com/brendangregg/FlameGraph):
+Generate SVG with [FlameGraph](https://github.com/brendangregg/FlameGraph):
 
 ```bash
-./flamegraph.pl profile.collapsed > profile.svg
+flamegraph.pl profile.collapsed > profile.svg
 ```
 
-## Platform Notes
+## Configuration
 
-| Platform | Mechanism | Notes |
-|----------|-----------|-------|
-| Linux | `timer_create` + SIGPROF | Full per-thread CPU sampling |
-| macOS | `setitimer` + SIGPROF | Process-wide signal delivery |
-| Windows | Timer + thread suspend | Higher overhead than Unix |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `interval_ms` | 10 | Sampling interval (1–1000ms) |
+| `memory_limit_mb` | 100 | Maximum buffer size |
+| `output_path` | None | Auto-save on stop |
 
-## Requirements
+### Interval Guidelines
 
-- Python 3.9 or later
-- C compiler for extension (gcc, clang, MSVC)
-- No runtime dependencies
+| Interval | Overhead | Use Case |
+|----------|----------|----------|
+| 1ms | ~5% | Short scripts, benchmarks |
+| 10ms | <1% | Development (default) |
+| 100ms | <0.1% | Production monitoring |
+
+## Platform Details
+
+| Platform | Mechanism | Thread Sampling |
+|----------|-----------|-----------------|
+| Linux | `timer_create` + SIGPROF | Per-thread CPU time |
+| macOS | Mach thread suspension | All threads automatic |
+| Windows | Timer queue + GIL | All threads automatic |
+
+**macOS**: Full support for free-threaded Python (`--disable-gil`) via Mach-based sampling.
+
+**Linux**: Requires explicit thread registration for worker threads. Signal-based sampling is not free-threading safe.
 
 ## Development
-
-### Setup
 
 ```bash
 git clone https://github.com/Periecle/spprof.git
 cd spprof
 pip install -e ".[dev]"
-pre-commit install
 ```
 
-### Running Tests
+### Testing
 
 ```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=spprof --cov-report=html
-
-# Run specific test file
-pytest tests/test_profiler.py -v
+pytest                           # Run tests
+pytest --cov=spprof              # With coverage
 ```
 
 ### Code Quality
 
 ```bash
-# Lint and format check
-ruff check src/ tests/
-ruff format --check src/ tests/
-
-# Auto-fix issues
-ruff check --fix src/ tests/
-ruff format src/ tests/
-
-# Type checking
-mypy src/spprof
+ruff check src/ tests/           # Lint
+ruff format src/ tests/          # Format
+mypy src/spprof                  # Type check
 ```
 
-### Pre-commit Hooks
+## Documentation
 
-Pre-commit hooks run automatically on `git commit`:
-
-```bash
-# Install hooks (one-time)
-pre-commit install
-
-# Run manually on all files
-pre-commit run --all-files
-```
+- [Usage Guide](docs/USAGE.md) — Detailed API documentation
+- [Architecture](docs/ARCHITECTURE.md) — Internal design
+- [Performance Tuning](docs/PERFORMANCE_TUNING.md) — Optimization guide
 
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
-

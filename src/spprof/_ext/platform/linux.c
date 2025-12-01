@@ -55,6 +55,30 @@ extern RingBuffer* g_ringbuffer;
  * =============================================================================
  * Thread Timer Registry (uthash-based)
  * =============================================================================
+ *
+ * CRITICAL INVARIANT: Registry functions must NEVER be called from signal
+ * handler context.
+ *
+ * The registry uses pthread_rwlock_t for thread safety. If the signal handler
+ * were to access the registry:
+ *
+ *   1. Thread A calls registry_add_thread() and holds write lock
+ *   2. SIGPROF interrupts Thread A (signal handler runs in Thread A's context)
+ *   3. If signal handler tried to call registry_find_thread():
+ *      - Deadlock: handler waits for read lock, but lock holder (Thread A)
+ *        is blocked waiting for the signal handler to complete
+ *
+ * This invariant is currently maintained by design:
+ *   - Signal handler (signal_handler.c) only accesses:
+ *     * Atomic statistics counters
+ *     * Lock-free ring buffer
+ *     * Frame walking (reads Python internals, no locks)
+ *   - Signal handler does NOT need thread registry because:
+ *     * Timer targets thread via SIGEV_THREAD_ID (kernel knows target)
+ *     * Thread ID comes from syscall(SYS_gettid), not registry
+ *
+ * The SPPROF_ASSERT_NOT_IN_SIGNAL() macro enforces this invariant in debug
+ * builds by aborting if a registry function is called from signal context.
  */
 
 /**
@@ -96,6 +120,11 @@ static uint64_t g_saved_interval_ns = 0;
 static _Atomic uint64_t g_total_overruns = 0;
 static _Atomic uint64_t g_timer_create_failures = 0;
 
+/* Wall-time fallback flag: set to 1 if CLOCK_THREAD_CPUTIME_ID failed and
+ * we're using CLOCK_MONOTONIC instead. This happens in containers with
+ * restricted syscalls (seccomp, cgroups v1). */
+static _Atomic int g_using_wall_time = 0;
+
 /* Thread-local timer for fast path access */
 static __thread timer_t tl_timer_id = NULL;
 static __thread int tl_timer_active = 0;
@@ -112,9 +141,14 @@ static __thread int tl_timer_active = 0;
  * Must be called once during platform_init().
  * NOT thread-safe - call only from main thread during startup.
  *
+ * SIGNAL SAFETY: NOT async-signal-safe. Should only be called at startup
+ * before any signals are configured.
+ *
  * @return 0 on success, -1 on error
  */
 static int registry_init(void) {
+    SPPROF_ASSERT_NOT_IN_SIGNAL("registry_init");
+    
     /* RWLock is already statically initialized with PTHREAD_RWLOCK_INITIALIZER */
     
     /* Set registry head to NULL (empty) */
@@ -131,10 +165,14 @@ static int registry_init(void) {
  * Clean up the thread timer registry.
  *
  * Deletes all timers and frees all memory.
- * Must block SIGPROF before calling.
+ * Blocks SIGPROF internally to prevent signal delivery during cleanup.
  * NOT thread-safe - call only during shutdown.
+ *
+ * SIGNAL SAFETY: NOT async-signal-safe. Uses pthread_rwlock and free().
  */
 static void registry_cleanup(void) {
+    SPPROF_ASSERT_NOT_IN_SIGNAL("registry_cleanup");
+    
     sigset_t block_set, old_set;
     
     /* Block SIGPROF to prevent signal delivery during cleanup */
@@ -177,11 +215,15 @@ static void registry_cleanup(void) {
  *
  * Thread-safe (acquires write lock).
  *
+ * SIGNAL SAFETY: NOT async-signal-safe. Uses pthread_rwlock and malloc().
+ *
  * @param tid Thread ID (from gettid())
  * @param timer_id POSIX timer handle from timer_create()
  * @return 0 on success, -1 on error (ENOMEM or duplicate TID)
  */
 static int registry_add_thread(pid_t tid, timer_t timer_id) {
+    SPPROF_ASSERT_NOT_IN_SIGNAL("registry_add_thread");
+    
     ThreadTimerEntry* entry = malloc(sizeof(ThreadTimerEntry));
     if (!entry) {
         errno = ENOMEM;
@@ -217,10 +259,14 @@ static int registry_add_thread(pid_t tid, timer_t timer_id) {
  * Thread-safe (acquires read lock).
  * Returns pointer to entry - do NOT free or modify without lock.
  *
+ * SIGNAL SAFETY: NOT async-signal-safe. Uses pthread_rwlock.
+ *
  * @param tid Thread ID to look up
  * @return Pointer to entry, or NULL if not found
  */
 static ThreadTimerEntry* registry_find_thread(pid_t tid) {
+    SPPROF_ASSERT_NOT_IN_SIGNAL("registry_find_thread");
+    
     ThreadTimerEntry* entry = NULL;
     pthread_rwlock_rdlock(&g_registry_lock);
     HASH_FIND_INT(g_thread_registry, &tid, entry);
@@ -234,10 +280,14 @@ static ThreadTimerEntry* registry_find_thread(pid_t tid) {
  * Also deletes the associated POSIX timer.
  * Thread-safe (acquires write lock).
  *
+ * SIGNAL SAFETY: NOT async-signal-safe. Uses pthread_rwlock and free().
+ *
  * @param tid Thread ID to remove
  * @return 0 on success, -1 if not found
  */
 static int registry_remove_thread(pid_t tid) {
+    SPPROF_ASSERT_NOT_IN_SIGNAL("registry_remove_thread");
+    
     ThreadTimerEntry* entry = NULL;
     
     pthread_rwlock_wrlock(&g_registry_lock);
@@ -269,9 +319,13 @@ static int registry_remove_thread(pid_t tid) {
  *
  * Thread-safe (acquires read lock).
  *
+ * SIGNAL SAFETY: NOT async-signal-safe. Uses pthread_rwlock.
+ *
  * @return Number of entries in registry
  */
 static size_t registry_count(void) {
+    SPPROF_ASSERT_NOT_IN_SIGNAL("registry_count");
+    
     size_t count;
     pthread_rwlock_rdlock(&g_registry_lock);
     count = HASH_COUNT(g_thread_registry);
@@ -325,11 +379,15 @@ static uint64_t registry_get_create_failures(void) {
  * Pause all registered thread timers.
  *
  * Sets timer interval to zero (disarms) without deleting.
- * Thread-safe (acquires read lock).
+ * Thread-safe (acquires write lock).
+ *
+ * SIGNAL SAFETY: NOT async-signal-safe. Uses pthread_rwlock.
  *
  * @return 0 on success, -1 on error
  */
 static int registry_pause_all(void) {
+    SPPROF_ASSERT_NOT_IN_SIGNAL("registry_pause_all");
+    
     struct itimerspec zero = {0};
     
     pthread_rwlock_wrlock(&g_registry_lock);
@@ -349,12 +407,16 @@ static int registry_pause_all(void) {
  * Resume all paused thread timers.
  *
  * Restores saved interval to all paused timers.
- * Thread-safe (acquires read lock).
+ * Thread-safe (acquires write lock).
+ *
+ * SIGNAL SAFETY: NOT async-signal-safe. Uses pthread_rwlock.
  *
  * @param interval_ns Interval to set (nanoseconds)
  * @return 0 on success, -1 on error
  */
 static int registry_resume_all(uint64_t interval_ns) {
+    SPPROF_ASSERT_NOT_IN_SIGNAL("registry_resume_all");
+    
     struct itimerspec its;
     its.it_value.tv_sec = interval_ns / 1000000000ULL;
     its.it_value.tv_nsec = interval_ns % 1000000000ULL;
@@ -439,7 +501,36 @@ int platform_timer_create(uint64_t interval_ns) {
     sev.sigev_signo = SPPROF_SIGNAL;
     sev._sigev_un._tid = tid;
     
-    if (timer_create(CLOCK_THREAD_CPUTIME_ID, &sev, &g_main_timer) < 0) {
+    /*
+     * Try CLOCK_THREAD_CPUTIME_ID first (CPU time, not wall time).
+     * This is preferred because it only counts time when the thread is
+     * actually executing, not time spent blocked on I/O.
+     *
+     * Fallback to CLOCK_MONOTONIC if CLOCK_THREAD_CPUTIME_ID fails.
+     * This can happen in restricted environments:
+     *   - Containers with seccomp filters blocking clock_gettime syscalls
+     *   - cgroups v1 environments with limited timer access
+     *   - Some virtualized environments
+     *
+     * With CLOCK_MONOTONIC fallback:
+     *   - sigev_notify stays SIGEV_THREAD_ID (signal targets this thread)
+     *   - Timer fires based on wall time instead of CPU time
+     *   - Samples may include time spent blocked/sleeping
+     */
+    int timer_created = 0;
+    
+    if (timer_create(CLOCK_THREAD_CPUTIME_ID, &sev, &g_main_timer) == 0) {
+        timer_created = 1;
+        atomic_store(&g_using_wall_time, 0);
+    } else {
+        /* CLOCK_THREAD_CPUTIME_ID failed - try CLOCK_MONOTONIC fallback */
+        if (timer_create(CLOCK_MONOTONIC, &sev, &g_main_timer) == 0) {
+            timer_created = 1;
+            atomic_store(&g_using_wall_time, 1);
+        }
+    }
+    
+    if (!timer_created) {
         atomic_fetch_add(&g_timer_create_failures, 1);
         signal_handler_stop();
         signal_handler_uninstall(SPPROF_SIGNAL);
@@ -621,13 +712,32 @@ int platform_register_thread(uint64_t interval_ns) {
     sev.sigev_signo = SPPROF_SIGNAL;
     sev._sigev_un._tid = tid;
     
+    /*
+     * Use the same clock type as the main timer for consistency.
+     * If g_using_wall_time is set, CLOCK_THREAD_CPUTIME_ID failed for main
+     * and we use CLOCK_MONOTONIC for all threads.
+     */
+    clockid_t clock_id = atomic_load(&g_using_wall_time) 
+                         ? CLOCK_MONOTONIC 
+                         : CLOCK_THREAD_CPUTIME_ID;
+    
     timer_t timer_id = NULL;
-    int create_result = timer_create(CLOCK_THREAD_CPUTIME_ID, &sev, &timer_id);
+    int create_result = timer_create(clock_id, &sev, &timer_id);
     
     /* Retry once on EAGAIN */
     if (create_result < 0 && errno == EAGAIN) {
         usleep(1000);  /* 1ms delay */
-        create_result = timer_create(CLOCK_THREAD_CPUTIME_ID, &sev, &timer_id);
+        create_result = timer_create(clock_id, &sev, &timer_id);
+    }
+    
+    /* If CPU time clock failed, try wall-time fallback */
+    if (create_result < 0 && clock_id == CLOCK_THREAD_CPUTIME_ID) {
+        create_result = timer_create(CLOCK_MONOTONIC, &sev, &timer_id);
+        if (create_result == 0) {
+            /* Note: We don't update g_using_wall_time here since the main
+             * timer might still be using CPU time. Per-thread timer just
+             * uses what works. */
+        }
     }
     
     if (create_result < 0) {
@@ -769,6 +879,18 @@ void platform_get_extended_stats(
     }
 }
 
+/**
+ * Check if profiler is using wall-time instead of CPU time.
+ *
+ * Returns 1 if CLOCK_THREAD_CPUTIME_ID failed and we fell back to
+ * CLOCK_MONOTONIC. This typically happens in restricted containers.
+ *
+ * @return 1 if using wall time, 0 if using CPU time
+ */
+int platform_is_using_wall_time(void) {
+    return atomic_load(&g_using_wall_time);
+}
+
 /*
  * =============================================================================
  * Debug Support
@@ -780,6 +902,8 @@ void platform_get_extended_stats(
 #include <stdio.h>
 
 void platform_debug_info(void) {
+    SPPROF_ASSERT_NOT_IN_SIGNAL("platform_debug_info");
+    
     fprintf(stderr, "[spprof] Linux Platform Info:\n");
     fprintf(stderr, "  Initialized: %d\n", g_platform_initialized);
     fprintf(stderr, "  Main timer: %p\n", (void*)g_main_timer);

@@ -17,18 +17,65 @@
 /*
  * Platform-specific atomic operations
  *
- * Windows uses Interlocked functions; POSIX uses C11 atomics.
- * Memory barriers are provided by the Interlocked functions on Windows.
+ * Windows uses Windows 8+ SDK intrinsics for atomic operations.
+ * POSIX uses C11 stdatomic.
+ *
+ * MINIMUM WINDOWS VERSION: Windows 8 / Windows Server 2012
+ * Windows 7 and earlier are NOT supported.
+ *
+ * MEMORY ORDERING SEMANTICS:
+ *
+ * RELAXED: No ordering guarantees. Used when:
+ *   - Reading a value that only the current thread writes (SPSC optimization)
+ *   - The value doesn't synchronize other data
+ *
+ * ACQUIRE: Prevents reads/writes from being reordered before this load.
+ *   Used by consumers to see all data published by the producer.
+ *
+ * RELEASE: Prevents reads/writes from being reordered after this store.
+ *   Used by producers to publish data visible to consumers.
+ *
+ * WINDOWS 8+ SDK INTRINSICS:
+ *   - ReadNoFence64(ptr)      - Relaxed load (no memory barrier)
+ *   - WriteNoFence64(ptr,val) - Relaxed store (no memory barrier)
+ *   - ReadAcquire64(ptr)      - Load with acquire semantics
+ *   - WriteRelease64(ptr,val) - Store with release semantics
+ *
+ * These intrinsics compile to:
+ *   - On x86/x64: Plain loads/stores (hardware TSO provides ordering)
+ *   - On ARM64:   Appropriate ldar/stlr instructions for acquire/release
  */
 #ifdef _WIN32
 
-/* Windows atomic operations using Interlocked functions */
+/*
+ * Relaxed operations: No memory ordering guarantees.
+ *
+ * ReadNoFence64/WriteNoFence64 provide atomic access without barriers.
+ * On x86/x64, these are plain volatile accesses.
+ * On ARM64, these are plain loads/stores without acquire/release semantics.
+ */
 #define ATOMIC_INIT(ptr, val) (*(ptr) = (val))
-#define ATOMIC_LOAD_RELAXED(ptr) InterlockedCompareExchange64(ptr, 0, 0)
-#define ATOMIC_LOAD_ACQUIRE(ptr) InterlockedCompareExchange64(ptr, 0, 0)
-#define ATOMIC_STORE_RELAXED(ptr, val) InterlockedExchange64(ptr, val)
-#define ATOMIC_STORE_RELEASE(ptr, val) InterlockedExchange64(ptr, val)
-#define ATOMIC_FETCH_ADD_RELAXED(ptr, val) InterlockedExchangeAdd64(ptr, val)
+#define ATOMIC_LOAD_RELAXED(ptr) ReadNoFence64((volatile LONG64*)(ptr))
+#define ATOMIC_STORE_RELAXED(ptr, val) WriteNoFence64((volatile LONG64*)(ptr), (val))
+
+/*
+ * Acquire/Release operations: Provide synchronization guarantees.
+ *
+ * ReadAcquire64: Ensures all subsequent reads/writes happen after this load.
+ * WriteRelease64: Ensures all prior reads/writes happen before this store.
+ *
+ * These pair together to form a "synchronizes-with" relationship:
+ * Producer: write data, then WriteRelease64(flag)
+ * Consumer: ReadAcquire64(flag), then read data
+ */
+#define ATOMIC_LOAD_ACQUIRE(ptr) ReadAcquire64((volatile LONG64*)(ptr))
+#define ATOMIC_STORE_RELEASE(ptr, val) WriteRelease64((volatile LONG64*)(ptr), (val))
+
+/*
+ * Atomic fetch-add: Always requires full atomicity (RMW operation).
+ * InterlockedExchangeAdd64 provides sequential consistency.
+ */
+#define ATOMIC_FETCH_ADD_RELAXED(ptr, val) InterlockedExchangeAdd64((ptr), (val))
 
 #else
 
@@ -177,15 +224,31 @@ int ringbuffer_write(RingBuffer* rb, const RawSample* sample) {
     slot->timestamp = sample->timestamp;
     slot->thread_id = sample->thread_id;
     slot->depth = sample->depth;
-    slot->_padding = 0;
+    slot->native_depth = sample->native_depth;
 
-    /* Copy frame pointers and instruction pointers */
+    /* Copy Python frame pointers and instruction pointers */
     for (int i = 0; i < sample->depth && i < SPPROF_MAX_STACK_DEPTH; i++) {
         slot->frames[i] = sample->frames[i];
         slot->instr_ptrs[i] = sample->instr_ptrs[i];
     }
 
-    /* Publish: make the sample visible to consumer */
+    /* Copy native PC addresses */
+    for (int i = 0; i < sample->native_depth && i < SPPROF_MAX_STACK_DEPTH; i++) {
+        slot->native_pcs[i] = sample->native_pcs[i];
+    }
+
+    /*
+     * Publish: make the sample visible to consumer.
+     *
+     * Memory ordering note: memory_order_release guarantees that ALL preceding
+     * writes (including the non-atomic slot copies above) are visible before
+     * this store completes. On ARM64, this compiles to a stlr (store-release)
+     * instruction which provides the necessary hardware barrier. An explicit
+     * dmb instruction is NOT needed - C11 atomics handle this portably.
+     *
+     * The consumer's ATOMIC_LOAD_ACQUIRE on write_idx pairs with this release
+     * store to form a proper synchronizes-with relationship.
+     */
     ATOMIC_STORE_RELEASE(&rb->write_idx, next_pos);
 
     return 1;
@@ -195,7 +258,13 @@ int ringbuffer_read(RingBuffer* rb, RawSample* out) {
     /* Read current read position */
     uint64_t read_pos = ATOMIC_LOAD_RELAXED(&rb->read_idx);
 
-    /* Check if buffer is empty */
+    /*
+     * Check if buffer is empty.
+     *
+     * Memory ordering: ACQUIRE pairs with the producer's RELEASE store.
+     * This ensures all slot data written by the producer is visible to us
+     * before we read write_idx > read_pos.
+     */
     uint64_t write_pos = ATOMIC_LOAD_ACQUIRE(&rb->write_idx);
     if (read_pos >= write_pos) {
         return 0;  /* Empty */
@@ -209,11 +278,17 @@ int ringbuffer_read(RingBuffer* rb, RawSample* out) {
     out->timestamp = slot->timestamp;
     out->thread_id = slot->thread_id;
     out->depth = slot->depth;
-    out->_padding = 0;
+    out->native_depth = slot->native_depth;
 
+    /* Copy Python frames */
     for (int i = 0; i < slot->depth && i < SPPROF_MAX_STACK_DEPTH; i++) {
         out->frames[i] = slot->frames[i];
         out->instr_ptrs[i] = slot->instr_ptrs[i];
+    }
+
+    /* Copy native PCs */
+    for (int i = 0; i < slot->native_depth && i < SPPROF_MAX_STACK_DEPTH; i++) {
+        out->native_pcs[i] = slot->native_pcs[i];
     }
 
     /* Advance read position */
