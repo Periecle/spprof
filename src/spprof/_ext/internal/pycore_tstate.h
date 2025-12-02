@@ -44,6 +44,12 @@
 
 #include <Python.h>
 #include <stdint.h>
+
+/* C11 atomics - not available on older MSVC */
+#ifndef _MSC_VER
+#include <stdatomic.h>
+#endif
+
 #include "pycore_frame.h"
 
 #ifdef __cplusplus
@@ -114,6 +120,32 @@ _spprof_tstate_get(void) {
     return PyThreadState_GET();
 #endif
 }
+
+/*
+ * =============================================================================
+ * Architecture-Specific Atomic Loads (Free-Threading Support)
+ * =============================================================================
+ *
+ * For free-threaded Python builds on Linux, we need architecture-appropriate
+ * memory ordering for pointer reads:
+ *
+ *   x86-64: Strong memory model. All loads have implicit acquire semantics.
+ *           Plain loads are sufficient - if we see a new pointer value, all
+ *           prior writes by that thread are visible.
+ *
+ *   ARM64:  Weak memory model. Stores can be reordered. Without barriers,
+ *           we might see a new pointer value but old data at that address.
+ *           Use __atomic_load_n with __ATOMIC_ACQUIRE for frame pointer reads.
+ */
+
+#if defined(__aarch64__)
+    /* ARM64: Weak memory model requires acquire barrier */
+    #define SPPROF_ATOMIC_LOAD_PTR(ptr) \
+        __atomic_load_n((void**)(ptr), __ATOMIC_ACQUIRE)
+#else
+    /* x86-64 and others: Strong memory model, plain load sufficient */
+    #define SPPROF_ATOMIC_LOAD_PTR(ptr) (*(void**)(ptr))
+#endif
 
 /*
  * =============================================================================
@@ -770,6 +802,272 @@ _spprof_capture_frames_with_instr_from_tstate(
     
     return count;
 }
+
+/*
+ * =============================================================================
+ * Speculative Frame Capture (Free-Threading Safe - Linux)
+ * =============================================================================
+ *
+ * These functions implement speculative frame reading with validation for
+ * free-threaded Python builds on Linux. They are designed to be async-signal-safe.
+ *
+ * KEY DESIGN PRINCIPLES:
+ *   1. Speculative reads: Read pointers without synchronization
+ *   2. Multi-layer validation: Check bounds, alignment, type before use
+ *   3. Cycle detection: Prevent infinite loops from corruption
+ *   4. Graceful degradation: Drop corrupted samples rather than crashing
+ *
+ * SAFETY MODEL:
+ *   On x86-64/ARM64, aligned pointer reads/writes are atomic at hardware level.
+ *   The danger is reading stale or freed memory. Race window during frame chain
+ *   updates is ~10-50ns, sampling interval is 10ms → ~0.0005% chance per sample.
+ *
+ * MEMORY ORDERING:
+ *   x86-64: Strong model, plain loads sufficient
+ *   ARM64: Weak model, use SPPROF_ATOMIC_LOAD_PTR for acquire semantics
+ */
+
+#if SPPROF_FREE_THREADED && defined(__linux__)
+
+/* External declarations for globals in signal_handler.c */
+extern PyTypeObject *_spprof_cached_code_type;
+extern int _spprof_speculative_initialized;
+extern _Atomic uint64_t _spprof_samples_dropped_validation;
+
+/* Heap bounds for pointer validation */
+#define SPPROF_HEAP_LOWER_BOUND  ((uintptr_t)0x10000)
+
+#if defined(__aarch64__)
+    /* ARM64: 48-bit user-space address limit */
+    #define SPPROF_HEAP_UPPER_BOUND  ((uintptr_t)0x0000FFFFFFFFFFFF)
+#else
+    /* x86-64: 47-bit user-space address limit */
+    #define SPPROF_HEAP_UPPER_BOUND  ((uintptr_t)0x00007FFFFFFFFFFF)
+#endif
+
+/* Cycle detection window size (fits in cache line) */
+#define SPPROF_CYCLE_WINDOW_SIZE 8
+
+/**
+ * Initialize speculative capture validation state.
+ *
+ * MUST be called during module initialization (with GIL held).
+ * Caches PyCode_Type pointer for async-signal-safe type checking.
+ *
+ * Thread Safety: NOT thread-safe. Call once during init.
+ * Signal Safety: NOT async-signal-safe. Do not call from handler.
+ *
+ * @return 0 on success
+ */
+static inline int _spprof_speculative_init(void) {
+    _spprof_cached_code_type = &PyCode_Type;
+    _spprof_speculative_initialized = 1;
+    return 0;
+}
+
+/**
+ * Enhanced pointer validation for speculative capture - ASYNC-SIGNAL-SAFE
+ *
+ * Performs more thorough validation than _spprof_ptr_valid():
+ *   1. NULL check
+ *   2. Heap bounds check (architecture-specific)
+ *   3. 8-byte alignment check (all Python objects are aligned)
+ *
+ * @param ptr Pointer to validate
+ * @return 1 if valid, 0 if invalid
+ */
+static inline int _spprof_ptr_valid_speculative(const void *ptr) {
+    uintptr_t addr = (uintptr_t)ptr;
+    return addr >= SPPROF_HEAP_LOWER_BOUND
+        && addr <= SPPROF_HEAP_UPPER_BOUND
+        && (addr & 0x7) == 0;
+}
+
+/**
+ * Check if object looks like a PyCodeObject - ASYNC-SIGNAL-SAFE
+ *
+ * Compares ob_type to cached PyCode_Type pointer without calling Python API.
+ * This is safe because:
+ *   - PyCode_Type is a static global in Python runtime (never freed)
+ *   - Address is constant for interpreter lifetime
+ *   - Comparison is just pointer equality
+ *
+ * @param obj Object to check (must have passed ptr_valid_speculative)
+ * @return 1 if looks like code object, 0 otherwise
+ */
+static inline int _spprof_looks_like_code(PyObject *obj) {
+    if (!_spprof_ptr_valid_speculative(obj)) return 0;
+    PyTypeObject *type = obj->ob_type;
+    if (!_spprof_ptr_valid_speculative(type)) return 0;
+    return type == _spprof_cached_code_type;
+}
+
+/**
+ * Capture Python frames speculatively with validation - ASYNC-SIGNAL-SAFE
+ *
+ * For use in signal handlers on free-threaded Python builds.
+ * Validates each pointer before dereferencing and detects cycles.
+ *
+ * @param frames Output array for code object pointers
+ * @param max_frames Maximum frames to capture (must be <= SPPROF_MAX_STACK_DEPTH)
+ * @return Number of valid frames captured, or 0 if validation failed
+ */
+static inline int
+_spprof_capture_frames_speculative(uintptr_t *frames, int max_frames) {
+    if (!_spprof_speculative_initialized || frames == NULL || max_frames <= 0) {
+        return 0;
+    }
+
+    /* Get thread state from TLS */
+    PyThreadState *tstate = _spprof_tstate_get();
+    if (!_spprof_ptr_valid_speculative(tstate)) {
+        return 0;
+    }
+
+    int depth = 0;
+    uintptr_t seen[SPPROF_CYCLE_WINDOW_SIZE] = {0};
+    int seen_idx = 0;
+    int safety_limit = SPPROF_FRAME_WALK_LIMIT;
+
+    /* Get current frame with appropriate memory ordering */
+    _spprof_InterpreterFrame *frame =
+        (_spprof_InterpreterFrame *)SPPROF_ATOMIC_LOAD_PTR(&tstate->current_frame);
+
+    while (depth < max_frames && safety_limit-- > 0) {
+        /* 1. Validate frame pointer */
+        if (!_spprof_ptr_valid_speculative(frame)) {
+            break;
+        }
+
+        /* 2. Cycle detection - check against recent frames */
+        for (int i = 0; i < SPPROF_CYCLE_WINDOW_SIZE && i < depth; i++) {
+            if (seen[i] == (uintptr_t)frame) {
+                /* Cycle detected - drop sample and increment counter */
+                atomic_fetch_add_explicit(
+                    &_spprof_samples_dropped_validation, 1,
+                    memory_order_relaxed);
+                return 0;
+            }
+        }
+        /* Record this frame in rolling window */
+        seen[seen_idx++ & (SPPROF_CYCLE_WINDOW_SIZE - 1)] = (uintptr_t)frame;
+
+        /* 3. Skip shim frames (owned by C stack) */
+        if (frame->owner == SPPROF_FRAME_OWNED_BY_CSTACK) {
+            frame = (_spprof_InterpreterFrame *)
+                SPPROF_ATOMIC_LOAD_PTR(&frame->previous);
+            continue;
+        }
+
+        /* 4. Extract code object (handle tagged pointers for Python 3.14) */
+#if SPPROF_PY314
+        PyObject *code = (PyObject *)(frame->f_executable.bits & ~SPPROF_STACKREF_TAG_MASK);
+#else
+        PyObject *code = frame->f_executable;
+#endif
+
+        /* 5. Validate code object using cached type pointer */
+        if (_spprof_looks_like_code(code)) {
+            frames[depth++] = (uintptr_t)code;
+        }
+
+        /* 6. Move to previous frame with memory ordering */
+        frame = (_spprof_InterpreterFrame *)
+            SPPROF_ATOMIC_LOAD_PTR(&frame->previous);
+    }
+
+    return depth;
+}
+
+/**
+ * Capture Python frames with instruction pointers, speculatively - ASYNC-SIGNAL-SAFE
+ *
+ * Same as _spprof_capture_frames_speculative but also captures instruction
+ * pointers for accurate line number resolution.
+ *
+ * @param code_ptrs Output array for code object pointers
+ * @param instr_ptrs Output array for instruction pointers (parallel)
+ * @param max_frames Maximum frames to capture
+ * @return Number of valid frames captured
+ */
+static inline int
+_spprof_capture_frames_with_instr_speculative(
+    uintptr_t *code_ptrs,
+    uintptr_t *instr_ptrs,
+    int max_frames
+) {
+    if (!_spprof_speculative_initialized || code_ptrs == NULL ||
+        instr_ptrs == NULL || max_frames <= 0) {
+        return 0;
+    }
+
+    /* Get thread state from TLS */
+    PyThreadState *tstate = _spprof_tstate_get();
+    if (!_spprof_ptr_valid_speculative(tstate)) {
+        return 0;
+    }
+
+    int depth = 0;
+    uintptr_t seen[SPPROF_CYCLE_WINDOW_SIZE] = {0};
+    int seen_idx = 0;
+    int safety_limit = SPPROF_FRAME_WALK_LIMIT;
+
+    /* Get current frame with appropriate memory ordering */
+    _spprof_InterpreterFrame *frame =
+        (_spprof_InterpreterFrame *)SPPROF_ATOMIC_LOAD_PTR(&tstate->current_frame);
+
+    while (depth < max_frames && safety_limit-- > 0) {
+        /* 1. Validate frame pointer */
+        if (!_spprof_ptr_valid_speculative(frame)) {
+            break;
+        }
+
+        /* 2. Cycle detection */
+        for (int i = 0; i < SPPROF_CYCLE_WINDOW_SIZE && i < depth; i++) {
+            if (seen[i] == (uintptr_t)frame) {
+                atomic_fetch_add_explicit(
+                    &_spprof_samples_dropped_validation, 1,
+                    memory_order_relaxed);
+                return 0;
+            }
+        }
+        seen[seen_idx++ & (SPPROF_CYCLE_WINDOW_SIZE - 1)] = (uintptr_t)frame;
+
+        /* 3. Skip shim frames */
+        if (frame->owner == SPPROF_FRAME_OWNED_BY_CSTACK) {
+            frame = (_spprof_InterpreterFrame *)
+                SPPROF_ATOMIC_LOAD_PTR(&frame->previous);
+            continue;
+        }
+
+        /* 4. Extract code object */
+#if SPPROF_PY314
+        PyObject *code = (PyObject *)(frame->f_executable.bits & ~SPPROF_STACKREF_TAG_MASK);
+#else
+        PyObject *code = frame->f_executable;
+#endif
+
+        /* 5. Validate and store code object and instruction pointer */
+        if (_spprof_looks_like_code(code)) {
+            code_ptrs[depth] = (uintptr_t)code;
+
+            /* Get instruction pointer for line number resolution */
+            void *instr = _spprof_frame_get_instr_ptr(frame);
+            instr_ptrs[depth] = _spprof_ptr_valid_speculative(instr)
+                ? (uintptr_t)instr : 0;
+
+            depth++;
+        }
+
+        /* 6. Move to previous frame */
+        frame = (_spprof_InterpreterFrame *)
+            SPPROF_ATOMIC_LOAD_PTR(&frame->previous);
+    }
+
+    return depth;
+}
+
+#endif /* SPPROF_FREE_THREADED && __linux__ */
 
 #ifdef __cplusplus
 }

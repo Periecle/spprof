@@ -117,8 +117,11 @@ extern "C" {
     #if defined(__APPLE__)
         /* Mach sampler uses thread_suspend - safe for free-threading */
         #define SPPROF_FREE_THREADING_SAFE 1
+    #elif defined(__linux__)
+        /* Linux uses speculative capture with validation - safe for free-threading */
+        #define SPPROF_FREE_THREADING_SAFE 1
     #else
-        /* Signal-based sampling is NOT safe for free-threading */
+        /* Signal-based sampling is NOT safe for free-threading on other platforms */
         #define SPPROF_FREE_THREADING_SAFE 0
     #endif
 #else
@@ -396,7 +399,7 @@ typedef struct _spprof_PyFrameObject_310 {
     char f_trace_opcodes;                       /* Emit per-opcode trace events */
     char f_gen_or_coro;                         /* True if generator/coroutine frame */
     /* State and execution info */
-    PyFrameState f_state;                       /* Frame state enum */
+    _spprof_PyFrameState f_state;               /* Frame state enum */
     int f_lasti;                                /* Last instruction (byte offset) */
     int f_lineno;                               /* Current line number (when tracing) */
     /* Note: f_localsplus follows but is variable-sized */

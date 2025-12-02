@@ -1038,4 +1038,21 @@ void platform_debug_info(void) {
 }
 #endif
 
+/*
+ * =============================================================================
+ * Signal Handler Compatibility Functions
+ * =============================================================================
+ *
+ * Windows doesn't use signal handlers, but these functions are referenced
+ * by module.c for statistics reporting. Provide stub implementations.
+ */
+
+/**
+ * Get number of samples dropped due to validation failures.
+ * On Windows, we don't have the same signal-based validation, so return 0.
+ */
+uint64_t signal_handler_validation_drops(void) {
+    return 0;
+}
+
 #endif /* _WIN32 */

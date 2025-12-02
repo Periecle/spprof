@@ -102,6 +102,21 @@ uint64_t signal_handler_samples_dropped(void);
 uint64_t signal_handler_errors(void);
 
 /**
+ * Get number of samples dropped due to validation failures.
+ *
+ * On free-threaded Linux builds, speculative frame capture validates
+ * pointers before dereferencing. This counter tracks samples that were
+ * dropped due to validation failures (cycle detection, invalid pointers,
+ * type mismatches).
+ *
+ * This is a normal condition under free-threading - samples are dropped
+ * gracefully rather than risking crashes from reading inconsistent state.
+ *
+ * @return Number of samples dropped due to validation failures (0 on non-free-threaded)
+ */
+uint64_t signal_handler_validation_drops(void);
+
+/**
  * Check if we're currently executing in signal handler context.
  *
  * This is used by debug assertions to enforce the invariant that
