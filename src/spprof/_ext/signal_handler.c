@@ -77,10 +77,8 @@
  * This file is still compiled on Darwin for compatibility but the signal
  * handler is not used. */
 
-#ifdef SPPROF_USE_INTERNAL_API
 #include "internal/pycore_frame.h"
 #include "internal/pycore_tstate.h"
-#endif
 
 /*
  * FREE-THREADING SAFETY CHECK
@@ -92,11 +90,9 @@
  * Darwin uses Mach-based sampling (darwin_mach.c) which is safe.
  * This file is still compiled but the handler is effectively disabled.
  */
-#ifdef SPPROF_USE_INTERNAL_API
 #if !SPPROF_FREE_THREADING_SAFE
     /* Signal handler will return immediately without capturing frames */
     #define SPPROF_SIGNAL_HANDLER_DISABLED 1
-#endif
 #endif
 
 /*
@@ -209,17 +205,12 @@ static inline uint64_t get_thread_id_unsafe(void) {
  */
 static inline int
 capture_python_stack_unsafe(uintptr_t* frames, int max_depth) {
-#ifdef SPPROF_USE_INTERNAL_API
-    #if SPPROF_FREE_THREADED && defined(__linux__)
-        /* Free-threaded Linux: Use speculative capture with validation */
-        return _spprof_capture_frames_speculative(frames, max_depth);
-    #else
-        /* GIL-enabled or Darwin (uses Mach sampler): Use direct capture */
-        return _spprof_capture_frames_unsafe(frames, max_depth);
-    #endif
+#if SPPROF_FREE_THREADED && defined(__linux__)
+    /* Free-threaded Linux: Use speculative capture with validation */
+    return _spprof_capture_frames_speculative(frames, max_depth);
 #else
-    /* Fallback: use framewalker (may not be fully signal-safe) */
-    return framewalker_capture_raw(frames, max_depth);
+    /* GIL-enabled or Darwin (uses Mach sampler): Use direct capture */
+    return _spprof_capture_frames_unsafe(frames, max_depth);
 #endif
 }
 
@@ -232,22 +223,12 @@ capture_python_stack_unsafe(uintptr_t* frames, int max_depth) {
  */
 static inline int
 capture_python_stack_with_instr_unsafe(uintptr_t* frames, uintptr_t* instr_ptrs, int max_depth) {
-#ifdef SPPROF_USE_INTERNAL_API
-    #if SPPROF_FREE_THREADED && defined(__linux__)
-        /* Free-threaded Linux: Use speculative capture with validation */
-        return _spprof_capture_frames_with_instr_speculative(frames, instr_ptrs, max_depth);
-    #else
-        /* GIL-enabled or Darwin (uses Mach sampler): Use direct capture */
-        return _spprof_capture_frames_with_instr_unsafe(frames, instr_ptrs, max_depth);
-    #endif
+#if SPPROF_FREE_THREADED && defined(__linux__)
+    /* Free-threaded Linux: Use speculative capture with validation */
+    return _spprof_capture_frames_with_instr_speculative(frames, instr_ptrs, max_depth);
 #else
-    /* Fallback: capture frames only, no instruction pointers */
-    int depth = framewalker_capture_raw(frames, max_depth);
-    /* Zero out instruction pointers - resolver will use first line */
-    for (int i = 0; i < depth; i++) {
-        instr_ptrs[i] = 0;
-    }
-    return depth;
+    /* GIL-enabled or Darwin (uses Mach sampler): Use direct capture */
+    return _spprof_capture_frames_with_instr_unsafe(frames, instr_ptrs, max_depth);
 #endif
 }
 

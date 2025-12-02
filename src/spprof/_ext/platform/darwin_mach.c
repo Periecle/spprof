@@ -59,9 +59,7 @@
 #include "../code_registry.h"
 
 /* Internal API for Python frame capture */
-#ifdef SPPROF_USE_INTERNAL_API
 #include "../internal/pycore_tstate.h"
-#endif
 
 /* Architecture-specific includes */
 #if defined(__x86_64__)
@@ -913,7 +911,6 @@ static void sample_all_threads(ThreadSnapshot* snapshot, MachSamplerState* state
         uintptr_t instr_ptrs[SPPROF_MAX_STACK_DEPTH];
         int python_depth = 0;
         
-#ifdef SPPROF_USE_INTERNAL_API
         /* Capture Python frames from the suspended thread's state.
          * This is safe because the target thread is suspended. */
         python_depth = _spprof_capture_frames_with_instr_from_tstate(
@@ -945,7 +942,6 @@ static void sample_all_threads(ThreadSnapshot* snapshot, MachSamplerState* state
             uint64_t gc_epoch = code_registry_get_gc_epoch();
             code_registry_add_refs_batch(python_frames, python_depth, gc_epoch);
         }
-#endif
         
         /* ================================================================
          * Resume thread IMMEDIATELY after capture and INCREF
