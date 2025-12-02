@@ -124,6 +124,30 @@ static int g_skip_frames = 2;  /* Skip signal handler frames */
 
 /*
  * =============================================================================
+ * Free-Threading Speculative Capture State (Linux only)
+ * =============================================================================
+ *
+ * These globals are used by the speculative frame capture functions for
+ * free-threaded Python builds on Linux. They are:
+ *   - Initialized once at module load (with GIL held)
+ *   - Read-only during signal handling (async-signal-safe)
+ *   - Never modified after initialization
+ */
+#if SPPROF_FREE_THREADED && defined(__linux__)
+
+/* Cached PyCode_Type pointer for async-signal-safe type checking */
+PyTypeObject *_spprof_cached_code_type = NULL;
+
+/* Initialization flag */
+int _spprof_speculative_initialized = 0;
+
+/* Counter for samples dropped due to validation failures */
+_Atomic uint64_t _spprof_samples_dropped_validation = 0;
+
+#endif /* SPPROF_FREE_THREADED && __linux__ */
+
+/*
+ * =============================================================================
  * Async-Signal-Safe Utilities
  * =============================================================================
  */
@@ -180,11 +204,19 @@ static inline uint64_t get_thread_id_unsafe(void) {
  *
  * This function reads Python's internal frame structures directly
  * without calling any Python C API functions.
+ *
+ * On free-threaded Linux builds, uses speculative capture with validation.
  */
 static inline int
 capture_python_stack_unsafe(uintptr_t* frames, int max_depth) {
 #ifdef SPPROF_USE_INTERNAL_API
-    return _spprof_capture_frames_unsafe(frames, max_depth);
+    #if SPPROF_FREE_THREADED && defined(__linux__)
+        /* Free-threaded Linux: Use speculative capture with validation */
+        return _spprof_capture_frames_speculative(frames, max_depth);
+    #else
+        /* GIL-enabled or Darwin (uses Mach sampler): Use direct capture */
+        return _spprof_capture_frames_unsafe(frames, max_depth);
+    #endif
 #else
     /* Fallback: use framewalker (may not be fully signal-safe) */
     return framewalker_capture_raw(frames, max_depth);
@@ -195,11 +227,19 @@ capture_python_stack_unsafe(uintptr_t* frames, int max_depth) {
  * Capture Python stack frames with instruction pointers - ASYNC-SIGNAL-SAFE
  *
  * This variant also captures instruction pointers for accurate line numbers.
+ *
+ * On free-threaded Linux builds, uses speculative capture with validation.
  */
 static inline int
 capture_python_stack_with_instr_unsafe(uintptr_t* frames, uintptr_t* instr_ptrs, int max_depth) {
 #ifdef SPPROF_USE_INTERNAL_API
-    return _spprof_capture_frames_with_instr_unsafe(frames, instr_ptrs, max_depth);
+    #if SPPROF_FREE_THREADED && defined(__linux__)
+        /* Free-threaded Linux: Use speculative capture with validation */
+        return _spprof_capture_frames_with_instr_speculative(frames, instr_ptrs, max_depth);
+    #else
+        /* GIL-enabled or Darwin (uses Mach sampler): Use direct capture */
+        return _spprof_capture_frames_with_instr_unsafe(frames, instr_ptrs, max_depth);
+    #endif
 #else
     /* Fallback: capture frames only, no instruction pointers */
     int depth = framewalker_capture_raw(frames, max_depth);
@@ -435,6 +475,23 @@ uint64_t signal_handler_samples_dropped(void) {
 
 uint64_t signal_handler_errors(void) {
     return atomic_load(&g_handler_errors);
+}
+
+/**
+ * Get number of samples dropped due to validation failures (free-threading).
+ *
+ * This counter is only incremented on free-threaded Linux builds when
+ * speculative frame capture detects validation failures (cycle detection,
+ * invalid pointers, etc.).
+ *
+ * @return Number of samples dropped due to validation failures
+ */
+uint64_t signal_handler_validation_drops(void) {
+#if SPPROF_FREE_THREADED && defined(__linux__)
+    return atomic_load(&_spprof_samples_dropped_validation);
+#else
+    return 0;
+#endif
 }
 
 /**

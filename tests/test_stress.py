@@ -446,6 +446,132 @@ class TestConcurrencyEdgeCases:
             assert result["profile"] is not None
 
 
+class TestFreethreadingStress:
+    """Stress tests specific to free-threaded Python builds.
+
+    These tests verify stability under conditions that specifically stress
+    the speculative capture mechanism used in free-threaded builds.
+
+    Note: These tests run on all Python builds but are most meaningful
+    on free-threaded builds where speculative capture is active.
+    """
+
+    def test_frame_chain_mutation_stress(self):
+        """Stress test: rapid function entry/exit during sampling."""
+        import spprof
+
+        stop_flag = threading.Event()
+        errors = []
+
+        def frame_mutator():
+            """Rapidly enter/exit functions to stress frame chain updates."""
+            try:
+                while not stop_flag.is_set():
+                    # Deep but quick call chain
+                    def a():
+                        return b()
+
+                    def b():
+                        return c()
+
+                    def c():
+                        return d()
+
+                    def d():
+                        return e()
+
+                    def e():
+                        return 42
+
+                    a()
+            except Exception as ex:
+                errors.append(ex)
+
+        spprof.start(interval_ms=1)  # Very fast sampling
+
+        threads = [threading.Thread(target=frame_mutator) for _ in range(4)]
+        for t in threads:
+            t.start()
+
+        time.sleep(0.3)  # Let stress build up
+
+        stop_flag.set()
+        for t in threads:
+            t.join()
+
+        profile = spprof.stop()
+        assert profile is not None
+        assert len(errors) == 0, f"Errors during stress test: {errors}"
+
+    def test_thread_lifecycle_stress(self):
+        """Stress test: threads starting/stopping during profiling."""
+        import spprof
+
+        completed = []
+
+        def short_lived():
+            result = sum(range(500))
+            completed.append(result)
+
+        spprof.start(interval_ms=1)
+
+        # Rapidly create and destroy threads
+        for batch in range(20):
+            threads = [threading.Thread(target=short_lived) for _ in range(5)]
+            for t in threads:
+                t.start()
+            # Don't wait - let some overlap with next batch
+            if batch % 4 == 0:
+                for t in threads:
+                    t.join()
+
+        # Wait for stragglers
+        time.sleep(0.2)
+
+        profile = spprof.stop()
+        assert profile is not None
+        assert len(completed) >= 50  # Most should have completed
+
+    def test_gc_during_speculative_capture(self):
+        """Stress test: GC running during speculative frame capture."""
+        import spprof
+
+        spprof.start(interval_ms=1)
+
+        # Create garbage that needs collection
+        for _ in range(100):
+            # Create objects that will be collected
+            _ = [list(range(100)) for _ in range(10)]
+            gc.collect()
+            # CPU work to generate samples
+            _ = sum(range(1000))
+
+        profile = spprof.stop()
+        assert profile is not None
+
+    def test_validation_under_memory_pressure(self):
+        """Stress test: validation with memory pressure."""
+        import spprof
+
+        spprof.start(interval_ms=2)
+
+        large_allocations = []
+        try:
+            for i in range(50):
+                # Allocate and release memory blocks
+                large_allocations.append([0] * 100000)
+                if i % 10 == 9:
+                    large_allocations.clear()
+                    gc.collect()
+                # CPU work
+                _ = sum(range(5000))
+        finally:
+            large_allocations.clear()
+
+        profile = spprof.stop()
+        assert profile is not None
+
+
 class TestAggregationStress:
     """Stress tests for aggregation feature."""
 

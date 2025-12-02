@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["meson-python>=0.15.0", "meson>=1.2.0"]
+build-backend = "mesonpy"
 
 [project]
 name = "spprof"
@@ -40,6 +40,9 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.8.0",
     "pre-commit>=3.5.0",
+    "meson>=1.2.0",
+    "meson-python>=0.15.0",
+    "ninja",
 ]
 
 [project.urls]
@@ -48,21 +51,63 @@ Documentation = "https://github.com/Periecle/spprof#readme"
 Repository = "https://github.com/Periecle/spprof"
 Issues = "https://github.com/Periecle/spprof/issues"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+# =============================================================================
+# Meson-python configuration
+# =============================================================================
+[tool.meson-python.args]
+setup = ['--warnlevel=2']
+install = ['--skip-subprojects']
 
-[tool.setuptools.packages.find]
-where = ["src"]
+# =============================================================================
+# cibuildwheel configuration
+# =============================================================================
+[tool.cibuildwheel]
+# Build for CPython only (no PyPy)
+build = "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = [
+    "*-musllinux_*",      # Skip musllinux (Alpine) - less common
+    "*-win32",            # Skip 32-bit Windows
+    "*i686",              # Skip 32-bit Linux
+]
 
-[tool.setuptools.package-data]
-spprof = ["py.typed", "_profiler.pyi"]
+# Test the built wheels
+test-requires = ["pytest>=7.0", "pytest-timeout>=2.0"]
+test-command = "pytest {project}/tests/test_profiler.py -v --tb=short"
 
+# Build in isolated environment
+build-frontend = "build"
+
+[tool.cibuildwheel.linux]
+# Use manylinux2014 for broader compatibility
+manylinux-x86_64-image = "manylinux2014"
+manylinux-aarch64-image = "manylinux2014"
+
+# Install meson and ninja in the build environment
+before-build = "pip install meson ninja"
+
+[tool.cibuildwheel.macos]
+# Build universal2 wheels for macOS (x86_64 + arm64)
+archs = ["x86_64", "arm64"]
+
+# Minimum macOS version
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.15" }
+
+[tool.cibuildwheel.windows]
+# Only 64-bit Windows
+archs = ["AMD64"]
+
+# =============================================================================
+# pytest configuration
+# =============================================================================
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 timeout = 30
 
+# =============================================================================
+# mypy configuration
+# =============================================================================
 [tool.mypy]
 python_version = "3.9"
 warn_return_any = true
@@ -146,4 +191,3 @@ exclude_lines = [
 show_missing = true
 skip_covered = false
 fail_under = 60
-

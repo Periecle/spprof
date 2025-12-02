@@ -13,120 +13,9 @@ env:
   FORCE_COLOR: 1
 
 jobs:
-  # Main test matrix - Linux and Windows (stable)
-  test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install -e ".[dev]"
-
-      - name: Run tests with coverage
-        run: |
-          python -m pytest tests/test_profiler.py tests/test_output.py tests/test_coverage.py -v --tb=short --cov=spprof --cov-report=xml --cov-report=term-missing
-        timeout-minutes: 5
-
-      - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
-        with:
-          files: coverage.xml
-          fail_ci_if_error: false
-          verbose: true
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-
-  # Test on Python 3.14-dev (experimental)
-  test-dev:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.14-dev
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.14-dev"
-          allow-prereleases: true
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install -e ".[dev]"
-
-      - name: Run tests
-        run: |
-          python -m pytest tests/test_profiler.py -v --tb=short
-        timeout-minutes: 5
-
-  # macOS tests - separate job with explicit runner versions
-  # macos-13 = Intel (x86_64), macos-14 = Apple Silicon (arm64)
-  test-macos:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15-intel, macos-15]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install -e ".[dev]"
-
-      - name: Run tests
-        run: |
-          python -m pytest tests/test_profiler.py tests/test_output.py -v --tb=short
-        timeout-minutes: 5
-
-  # Python 3.13 free-threaded build (experimental)
-  # MUST run on macOS where Mach-based sampling is safe for free-threading
-  # Linux signal-based sampling is NOT safe for free-threaded Python
-  free-threaded:
-    runs-on: macos-15
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.13 free-threaded
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13t"
-          freethreaded: true
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install -e ".[dev]"
-
-      - name: Run tests
-        run: |
-          python -m pytest tests/test_profiler.py -v --tb=short
-        timeout-minutes: 5
-
+  # =============================================================================
   # Lint, format, and type checking
+  # =============================================================================
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -143,25 +32,24 @@ jobs:
           pip install ruff mypy
 
       - name: Check formatting (ruff format)
-        run: |
-          ruff format --check src/ tests/ benchmarks/ examples/
+        run: ruff format --check src/ tests/ benchmarks/ examples/
 
       - name: Lint (ruff check)
-        run: |
-          ruff check src/ tests/ benchmarks/ examples/
+        run: ruff check src/ tests/ benchmarks/ examples/
 
       - name: Type check (mypy)
-        run: |
-          mypy src/spprof --ignore-missing-imports
+        run: mypy src/spprof --ignore-missing-imports
 
-  # Build wheels for all platforms
-  build:
+  # =============================================================================
+  # Unified test matrix - Linux, Windows, macOS
+  # =============================================================================
+  test:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15-intel, macos-15, windows-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        os: [ubuntu-latest, windows-latest, macos-15]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -170,23 +58,77 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install build tools
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install build
+          python -m pip install --upgrade pip
+          pip install meson ninja meson-python
 
-      - name: Build wheel
+      - name: Install package in development mode
+        run: pip install -e ".[dev]"
+
+      - name: Run tests with coverage
         run: |
-          python -m build --wheel
+          python -m pytest tests/test_profiler.py tests/test_output.py tests/test_coverage.py -v --tb=short --cov=spprof --cov-report=xml --cov-report=term-missing
+        timeout-minutes: 5
 
-      - name: Upload wheel
-        uses: actions/upload-artifact@v4
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
         with:
-          name: wheel-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: dist/*.whl
+          files: coverage.xml
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
+  # =============================================================================
+  # Free-threaded Python builds (3.13t, 3.14t)
+  # =============================================================================
+  free-threaded:
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+        python-version: ["3.13t", "3.14t"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }} free-threaded
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - name: Verify free-threaded build
+        run: |
+          python -c "import sys; assert hasattr(sys, '_is_gil_enabled') and not sys._is_gil_enabled(), 'Not a free-threaded build'"
+          echo "✓ Free-threaded Python confirmed"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install meson ninja meson-python
+
+      - name: Install package in development mode
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: |
+          python -X faulthandler -m pytest tests/test_profiler.py -v --tb=short
+        timeout-minutes: 5
+
+  # =============================================================================
   # Benchmarks
+  # =============================================================================
   benchmark:
     runs-on: ubuntu-latest
     steps:
@@ -197,10 +139,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install build tools
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install -e ".[dev]"
+          python -m pip install --upgrade pip
+          pip install meson ninja meson-python
+
+      - name: Install package in development mode
+        run: pip install -e ".[dev]"
 
       - name: Run benchmarks
         run: |

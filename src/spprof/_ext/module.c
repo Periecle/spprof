@@ -40,6 +40,7 @@
  * Python versions (3.9-3.14).
  */
 #include "internal/pycore_frame.h"
+#include "internal/pycore_tstate.h"
 
 /* Global state - exposed for platform signal handlers */
 /* Must be visible for signal_handler.c to access via extern */
@@ -286,6 +287,7 @@ static PyObject* spprof_is_active(PyObject* self, PyObject* args) {
  *   - 'duration_ns': int
  *   - 'interval_ns': int
  *   - 'safe_mode_rejects': int (samples discarded due to safe mode)
+ *   - 'validation_drops': int (samples dropped due to free-threading validation)
  */
 static PyObject* spprof_get_stats(PyObject* self, PyObject* args) {
     int is_active = ATOMIC_LOAD(&g_is_active);
@@ -303,13 +305,17 @@ static PyObject* spprof_get_stats(PyObject* self, PyObject* args) {
     uint64_t safe_mode_rejects = 0;
     code_registry_get_stats_extended(NULL, NULL, NULL, NULL, NULL, &safe_mode_rejects);
     
+    /* Get validation drop count (free-threading speculative capture) */
+    uint64_t validation_drops = signal_handler_validation_drops();
+    
     return Py_BuildValue(
-        "{s:K, s:K, s:K, s:K, s:K}",
+        "{s:K, s:K, s:K, s:K, s:K, s:K}",
         "collected_samples", collected,
         "dropped_samples", dropped,
         "duration_ns", duration_ns,
         "interval_ns", g_interval_ns,
-        "safe_mode_rejects", safe_mode_rejects
+        "safe_mode_rejects", safe_mode_rejects,
+        "validation_drops", validation_drops
     );
 }
 
@@ -713,6 +719,23 @@ PyMODINIT_FUNC PyInit__native(void) {
         PyErr_SetString(PyExc_RuntimeError, "Unsupported Python version");
         return NULL;
     }
+
+    /*
+     * Initialize speculative capture for free-threaded Linux builds.
+     *
+     * This caches the PyCode_Type pointer for async-signal-safe type checking.
+     * Must be called during module initialization (with GIL held) before any
+     * signal handlers run.
+     */
+#if SPPROF_FREE_THREADED && defined(__linux__)
+    if (_spprof_speculative_init() < 0) {
+        platform_cleanup();
+        Py_DECREF(module);
+        PyErr_SetString(PyExc_RuntimeError,
+            "Failed to initialize speculative capture for free-threaded Python");
+        return NULL;
+    }
+#endif
 
     /* Register atexit handler for cleanup */
     if (Py_AtExit(spprof_cleanup) < 0) {
