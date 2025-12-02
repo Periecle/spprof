@@ -56,7 +56,9 @@
 /* Windows uses its own implementation in platform/windows.c */
 #ifndef _WIN32
 
-#define _GNU_SOURCE
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 #include <Python.h>
 #include <signal.h>
 #include <stdint.h>
@@ -72,6 +74,7 @@
 #include "ringbuffer.h"
 #include "framewalker.h"
 #include "unwind.h"
+#include "error.h"
 
 /* Note: Darwin uses Mach-based sampler (darwin_mach.c) instead of signals.
  * This file is still compiled on Darwin for compatibility but the signal
@@ -116,7 +119,6 @@ static volatile sig_atomic_t g_in_handler = 0;  /* Reentrancy guard */
 static _Atomic uint64_t g_samples_captured = 0;
 static _Atomic uint64_t g_samples_dropped = 0;
 static _Atomic uint64_t g_handler_errors = 0;
-static _Atomic uint64_t g_walk_depth_sum = 0;  /* Debug: sum of all walk depths */
 
 /* Configuration */
 static int g_capture_native = 0;
@@ -133,7 +135,7 @@ static int g_skip_frames = 2;  /* Skip signal handler frames */
  *   - Read-only during signal handling (async-signal-safe)
  *   - Never modified after initialization
  */
-#if SPPROF_FREE_THREADED && defined(__linux__)
+#if defined(SPPROF_FREE_THREADED) && SPPROF_FREE_THREADED && defined(__linux__)
 
 /* Cached PyCode_Type pointer for async-signal-safe type checking */
 PyTypeObject *_spprof_cached_code_type = NULL;
@@ -206,11 +208,15 @@ static inline uint64_t get_thread_id_unsafe(void) {
  * without calling any Python C API functions.
  *
  * On free-threaded Linux builds, uses speculative capture with validation.
+ *
+ * Note: This function may be unused on Python 3.13+ where we use
+ * capture_python_stack_with_instr_unsafe() for accurate line numbers.
  */
+SPPROF_UNUSED
 static inline int
 capture_python_stack_unsafe(uintptr_t* frames, int max_depth) {
 #ifdef SPPROF_USE_INTERNAL_API
-    #if SPPROF_FREE_THREADED && defined(__linux__)
+    #if defined(SPPROF_FREE_THREADED) && SPPROF_FREE_THREADED && defined(__linux__)
         /* Free-threaded Linux: Use speculative capture with validation */
         return _spprof_capture_frames_speculative(frames, max_depth);
     #else
@@ -233,7 +239,7 @@ capture_python_stack_unsafe(uintptr_t* frames, int max_depth) {
 static inline int
 capture_python_stack_with_instr_unsafe(uintptr_t* frames, uintptr_t* instr_ptrs, int max_depth) {
 #ifdef SPPROF_USE_INTERNAL_API
-    #if SPPROF_FREE_THREADED && defined(__linux__)
+    #if defined(SPPROF_FREE_THREADED) && SPPROF_FREE_THREADED && defined(__linux__)
         /* Free-threaded Linux: Use speculative capture with validation */
         return _spprof_capture_frames_with_instr_speculative(frames, instr_ptrs, max_depth);
     #else
@@ -487,7 +493,7 @@ uint64_t signal_handler_errors(void) {
  * @return Number of samples dropped due to validation failures
  */
 uint64_t signal_handler_validation_drops(void) {
-#if SPPROF_FREE_THREADED && defined(__linux__)
+#if defined(SPPROF_FREE_THREADED) && SPPROF_FREE_THREADED && defined(__linux__)
     return atomic_load(&_spprof_samples_dropped_validation);
 #else
     return 0;
@@ -536,4 +542,7 @@ void signal_handler_debug_info(void) {
 #endif /* SPPROF_DEBUG */
 
 #endif /* !_WIN32 */
+
+/* Ensure non-empty translation unit on Windows (C4206) */
+typedef int spprof_signal_handler_empty_unit_guard;
 

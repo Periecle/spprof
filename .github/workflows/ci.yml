@@ -69,8 +69,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install meson ninja meson-python
 
-      - name: Install package in development mode
-        run: pip install -e ".[dev]"
+      - name: Install package in development mode (strict warnings)
+        run: pip install -e ".[dev]" --config-settings=setup-args="-Dstrict=true"
 
       - name: Run tests with coverage
         run: |
@@ -118,13 +118,50 @@ jobs:
           python -m pip install --upgrade pip
           pip install meson ninja meson-python
 
-      - name: Install package in development mode
-        run: pip install -e ".[dev]"
+      - name: Install package in development mode (strict warnings)
+        run: pip install -e ".[dev]" --config-settings=setup-args="-Dstrict=true"
 
       - name: Run tests
         run: |
           python -X faulthandler -m pytest tests/test_profiler.py -v --tb=short
         timeout-minutes: 5
+
+  # =============================================================================
+  # Memory safety testing with sanitizers (Linux only)
+  # =============================================================================
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasan8 libubsan1
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install meson ninja meson-python pytest pytest-timeout
+
+      - name: Build with ASAN+UBSAN and strict warnings
+        run: |
+          meson setup builddir --buildtype=debug -Dsanitize=address,undefined -Dstrict=true
+          meson compile -C builddir
+
+      - name: Run tests with sanitizers
+        env:
+          PYTHONPATH: ${{ github.workspace }}/builddir/src/spprof:${{ github.workspace }}/src
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:symbolize=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          python -m pytest tests/ -v --tb=short -x
+        timeout-minutes: 10
 
   # =============================================================================
   # Benchmarks
@@ -144,8 +181,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install meson ninja meson-python
 
-      - name: Install package in development mode
-        run: pip install -e ".[dev]"
+      - name: Install package in development mode (strict warnings)
+        run: pip install -e ".[dev]" --config-settings=setup-args="-Dstrict=true"
 
       - name: Run benchmarks
         run: |

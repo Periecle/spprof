@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+# meson_options.txt - Build options for spprof
+
+option('sanitize', type: 'combo', choices: ['none', 'address', 'undefined', 'address,undefined'],
+       value: 'none',
+       description: 'Enable sanitizers (ASAN/UBSAN)')
+
+option('strict', type: 'boolean', value: false,
+       description: 'Treat warnings as errors (recommended for CI)')
+

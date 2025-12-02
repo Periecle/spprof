@@ -62,7 +62,24 @@ static void spprof_cleanup(void);
  * Internal function. Use spprof.start() from Python.
  */
 static PyObject* spprof_start(PyObject* self, PyObject* args, PyObject* kwargs) {
+    /* Note: PyArg_ParseTupleAndKeywords expects char**, not const char**.
+     * This is a limitation of Python's C API. We suppress the warning locally.
+     * GCC uses -Wdiscarded-qualifiers, Clang uses -Wincompatible-pointer-types-discards-qualifiers. */
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wwrite-strings"
+#pragma clang diagnostic ignored "-Wincompatible-pointer-types-discards-qualifiers"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wwrite-strings"
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+#endif
     static char* kwlist[] = {"interval_ns", NULL};
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
     uint64_t interval_ns = 10000000;  /* Default 10ms */
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|K", kwlist, &interval_ns)) {
@@ -618,7 +635,7 @@ static PyObject* spprof_get_code_registry_stats(PyObject* self, PyObject* args) 
 
 /* Method table */
 static PyMethodDef SpProfMethods[] = {
-    {"_start", (PyCFunction)spprof_start, METH_VARARGS | METH_KEYWORDS,
+    {"_start", (PyCFunction)(void(*)(void))spprof_start, METH_VARARGS | METH_KEYWORDS,
      "Start profiling (internal). Use spprof.start() instead."},
     {"_stop", spprof_stop, METH_NOARGS,
      "Stop profiling and return raw samples (internal, legacy API)."},

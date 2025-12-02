@@ -160,7 +160,7 @@ void code_registry_release_ref(uintptr_t code_addr);
  * @param code_addrs Array of raw PyCodeObject* pointers.
  * @param count      Number of pointers in the array.
  */
-void code_registry_release_refs_batch(uintptr_t* code_addrs, size_t count);
+void code_registry_release_refs_batch(const uintptr_t* code_addrs, size_t count);
 
 /**
  * Validate a code object pointer (REQUIRES GIL).

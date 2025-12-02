@@ -15,7 +15,7 @@ A high-performance sampling profiler for Python with [Speedscope](https://www.sp
 - **Multi-threaded** — Automatic profiling of all Python threads
 - **Memory-efficient** — Stack aggregation for long-running profiles
 - **Cross-platform** — Linux, macOS, Windows
-- **Python 3.9–3.14** — Including free-threaded builds (macOS)
+- **Python 3.9–3.14** — Including free-threaded builds (Linux & macOS)
 - **Zero dependencies** — No runtime requirements
 - **Container-friendly** — No `SYS_PTRACE` capability required
 
@@ -152,15 +152,15 @@ flamegraph.pl profile.collapsed > profile.svg
 
 ## Platform Details
 
-| Platform | Mechanism | Thread Sampling |
-|----------|-----------|-----------------|
-| Linux | `timer_create` + SIGPROF | Per-thread CPU time |
-| macOS | Mach thread suspension | All threads automatic |
-| Windows | Timer queue + GIL | All threads automatic |
+| Platform | Mechanism | Thread Sampling | Free-Threading |
+|----------|-----------|-----------------|----------------|
+| Linux | `timer_create` + SIGPROF | Per-thread CPU time | ✅ Supported |
+| macOS | Mach thread suspension | All threads automatic | ✅ Supported |
+| Windows | Timer queue + GIL | All threads automatic | — |
 
-**macOS**: Full support for free-threaded Python (`--disable-gil`) via Mach-based sampling.
+**Linux**: Per-thread CPU time sampling with explicit thread registration. Free-threaded Python 3.13+ is supported via speculative capture with validation (~0.0005% sample drop rate).
 
-**Linux**: Requires explicit thread registration for worker threads. Signal-based sampling is not free-threading safe.
+**macOS**: Full support for free-threaded Python (`--disable-gil`) via Mach-based thread suspension sampling.
 
 ## Development
 
@@ -185,11 +185,48 @@ ruff format src/ tests/          # Format
 mypy src/spprof                  # Type check
 ```
 
+## Troubleshooting
+
+### No Samples Captured
+
+If your workload completes too quickly, you may see zero samples. Ensure your workload runs at least **10x the sampling interval**:
+
+```python
+# For fast functions (< 100ms), use aggressive sampling
+spprof.start(interval_ms=1)
+fast_function()  # Must run > 10ms to capture samples
+profile = spprof.stop()
+```
+
+### High Dropped Sample Count
+
+If `profile.dropped_count` is high, samples are being lost due to buffer overflow:
+
+```python
+# Increase memory limit for long-running profiles
+spprof.start(interval_ms=10, memory_limit_mb=200)
+
+# Or reduce sampling frequency
+spprof.start(interval_ms=100)  # For production/long profiles
+```
+
+### Container Permission Issues
+
+In containers with restricted syscalls (seccomp, cgroups v1), spprof automatically falls back to wall-time sampling. For full CPU-time profiling:
+
+```bash
+# Docker: Run with extended permissions (development only)
+docker run --security-opt seccomp=unconfined myapp
+```
+
+See [Troubleshooting Guide](docs/TROUBLESHOOTING.md) for detailed solutions including custom seccomp profiles and Kubernetes configurations.
+
 ## Documentation
 
 - [Usage Guide](docs/USAGE.md) — Detailed API documentation
 - [Architecture](docs/ARCHITECTURE.md) — Internal design
 - [Performance Tuning](docs/PERFORMANCE_TUNING.md) — Optimization guide
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — Common issues and solutions
 
 ## License
 

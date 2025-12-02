@@ -11,7 +11,8 @@ This guide covers how to configure spprof for optimal performance across differe
 5. [Overhead Estimation](#overhead-estimation)
 6. [Long-Running Profiles](#long-running-profiles)
 7. [Multi-Threading Optimization](#multi-threading-optimization)
-8. [Troubleshooting Performance Issues](#troubleshooting-performance-issues)
+8. [Free-Threading Optimization](#free-threading-optimization)
+9. [Troubleshooting Performance Issues](#troubleshooting-performance-issues)
 
 ---
 
@@ -440,7 +441,68 @@ profile = spprof.stop()
 
 ---
 
+## Free-Threading Optimization
+
+Python 3.13+ can be built with free-threading support (`--disable-gil`). spprof fully supports free-threaded Python on Linux and macOS.
+
+### Platform Behavior
+
+| Platform | Free-Threading Mechanism | Overhead |
+|----------|-------------------------|----------|
+| Linux | Speculative capture with validation | Minimal additional overhead |
+| macOS | Mach thread suspension | No change from GIL builds |
+
+### Linux: Speculative Capture Tuning
+
+On Linux free-threaded builds, the profiler uses speculative capture with multi-layer validation. Some samples may be dropped due to race conditions (~0.0005% drop rate).
+
+**Monitoring Validation Drops:**
+
+```python
+import spprof
+
+spprof.start(interval_ms=10)
+# ... highly concurrent workload ...
+profile = spprof.stop()
+
+print(f"Samples: {profile.sample_count}")
+print(f"Dropped (buffer): {profile.dropped_count}")
+# Low validation drop rate is normal
+```
+
+**Reducing Validation Drops:**
+
+For workloads with very high thread contention:
+
+```python
+# Increase interval to reduce collision probability
+spprof.start(interval_ms=20)  # Instead of 10ms
+```
+
+### macOS: Thread Suspension
+
+macOS uses Mach thread suspension, which provides deterministic sampling with no race conditions. No special tuning is needed for free-threaded builds.
+
+### Best Practices
+
+```python
+import spprof
+
+# 1. For many-threaded free-threading workloads, slightly longer intervals
+spprof.start(interval_ms=15)  # Balance accuracy vs drops
+
+# 2. Use aggregation to minimize impact of any dropped samples
+profile = spprof.stop()
+agg = profile.aggregate()
+print(f"Unique stacks: {agg.unique_stack_count}")
+print(f"Compression: {agg.compression_ratio:.1f}x")
+```
+
+---
+
 ## Troubleshooting Performance Issues
+
+For comprehensive troubleshooting beyond performance, see the [Troubleshooting Guide](TROUBLESHOOTING.md).
 
 ### High Overhead
 
@@ -478,7 +540,8 @@ spprof.set_native_unwinding(False)
 # Check for drops
 profile = spprof.stop()
 if profile.dropped_count > 0:
-    print(f"Warning: {profile.dropped_count} samples dropped")
+    drop_rate = profile.dropped_count / (profile.sample_count + profile.dropped_count) * 100
+    print(f"Warning: {profile.dropped_count} samples dropped ({drop_rate:.1f}%)")
     print("Consider: increasing memory_limit_mb or interval_ms")
 ```
 
@@ -513,6 +576,7 @@ def debug_worker():
 1. Workload too short (< interval_ms)
 2. Profiler not started (`spprof.is_active() == False`)
 3. Native extension not loaded
+4. Container permission issues (see [Troubleshooting Guide](TROUBLESHOOTING.md#3-container-permission-issues))
 
 ```python
 import spprof
@@ -541,6 +605,7 @@ print(f"Samples collected: {profile.sample_count}")
 | C extension debugging | 10ms | Default | On |
 | Production monitoring | 100ms | 50MB | Off |
 | Long-running (hours) | 100ms | 100MB | Off |
+| Free-threaded (high contention) | 15-20ms | Default | Off |
 
 ### Performance Checklist
 
@@ -549,5 +614,6 @@ print(f"Samples collected: {profile.sample_count}")
 - [ ] Native unwinding off unless debugging C code
 - [ ] Threads registered (Linux)
 - [ ] Aggregation used for analysis of large profiles
+- [ ] Consider longer intervals for free-threaded high-concurrency workloads
 
 

@@ -282,9 +282,17 @@ class TestGCDuringSampling:
 
         weak_refs = []
 
+        class GarbageObject:
+            """Custom class that supports weak references."""
+
+            __slots__ = ("__weakref__", "data")
+
+            def __init__(self):
+                self.data = [0] * 1000
+
         def create_garbage():
             """Create objects that will be GC'd."""
-            obj = {"data": [0] * 1000}
+            obj = GarbageObject()
             weak_refs.append(weakref.ref(obj))
             return obj
 

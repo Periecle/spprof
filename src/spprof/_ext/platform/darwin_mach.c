@@ -57,6 +57,7 @@
 #include "darwin_mach.h"
 #include "../ringbuffer.h"
 #include "../code_registry.h"
+#include "../error.h"
 
 /* Internal API for Python frame capture */
 #ifdef SPPROF_USE_INTERNAL_API
@@ -108,7 +109,8 @@ static void mach_debug_log(const char* fmt, ...) {
 }
 #define MACH_DEBUG(fmt, ...) mach_debug_log(fmt, ##__VA_ARGS__)
 #else
-#define MACH_DEBUG(fmt, ...) ((void)0)
+/* Accept any arguments but discard them - avoids C23 variadic warning */
+#define MACH_DEBUG(...) ((void)0)
 #endif
 
 /*
@@ -717,6 +719,7 @@ static int write_mixed_sample_to_ringbuffer(
 /**
  * Write a captured Python stack to the ring buffer (legacy, no native frames).
  */
+SPPROF_UNUSED
 static int write_python_sample_to_ringbuffer(
     uint64_t thread_id,
     uint64_t timestamp,
@@ -732,6 +735,7 @@ static int write_python_sample_to_ringbuffer(
 /**
  * Write a captured native stack to the ring buffer (for native-only mode).
  */
+SPPROF_UNUSED
 static int write_native_sample_to_ringbuffer(const CapturedStack* stack, 
                                              RingBuffer* ringbuffer) {
     RawSample sample;
@@ -1000,6 +1004,7 @@ static void sample_all_threads(ThreadSnapshot* snapshot, MachSamplerState* state
 /**
  * Legacy single-thread sample function (not used in current implementation).
  */
+SPPROF_UNUSED
 static int sample_thread(ThreadEntry* entry, MachSamplerState* state) {
     (void)entry;
     (void)state;
@@ -1129,7 +1134,7 @@ void mach_sampler_cleanup(void) {
     
     /* Remove introspection hook */
     if (g_state.registry.hook_installed) {
-        pthread_introspection_hook_install(g_state.registry.prev_hook);
+        (void)pthread_introspection_hook_install(g_state.registry.prev_hook);
         g_state.registry.hook_installed = 0;
     }
     

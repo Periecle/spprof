@@ -57,6 +57,26 @@
 extern "C" {
 #endif
 
+/*
+ * =============================================================================
+ * COMPILER PORTABILITY MACROS
+ * =============================================================================
+ */
+
+/**
+ * SPPROF_UNUSED - Mark a function or variable as intentionally unused.
+ *
+ * Suppresses "unused function" or "unused variable" warnings across compilers.
+ * Use when a function is conditionally used or kept for future use.
+ */
+#if defined(_MSC_VER)
+#define SPPROF_UNUSED /* MSVC doesn't warn about static unused functions */
+#elif defined(__GNUC__) || defined(__clang__)
+#define SPPROF_UNUSED __attribute__((unused))
+#else
+#define SPPROF_UNUSED
+#endif
+
 /**
  * SpResult - Common result type for operations that can fail in multiple ways
  *

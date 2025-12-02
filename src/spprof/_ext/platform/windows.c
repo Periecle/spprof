@@ -716,6 +716,7 @@ int platform_timer_create(uint64_t interval_ns) {
                                 interval_ms, interval_ms,
                                 WT_EXECUTEINTIMERTHREAD)) {
         DWORD err = GetLastError();
+        (void)err;  /* Used only in debug logging */
         InterlockedExchange(&g_sampling_active, 0);
         DeleteTimerQueue(g_timer_queue);
         g_timer_queue = NULL;

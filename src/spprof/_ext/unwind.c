@@ -10,7 +10,7 @@
 
 /* Must be before any includes for dladdr */
 #ifndef _GNU_SOURCE
-#define _GNU_SOURCE
+#define _GNU_SOURCE 1
 #endif
 
 #include "unwind.h"

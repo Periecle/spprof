@@ -8,7 +8,7 @@ spprof is a high-performance sampling profiler for Python that captures call sta
 
 | Platform | Sampling Method | Free-Threading Safe |
 |----------|-----------------|---------------------|
-| **Linux** | SIGPROF signal + per-thread timers | ❌ No (GIL required) |
+| **Linux** | SIGPROF signal + per-thread timers | ✅ Yes (speculative capture) |
 | **macOS** | Mach thread suspension | ✅ Yes |
 | **Windows** | Timer queue + GIL acquisition | ✅ Yes |
 
@@ -239,6 +239,8 @@ Benefits:
 - Each thread gets its own timer
 - True per-thread CPU profiling
 
+**Container Fallback**: When `CLOCK_THREAD_CPUTIME_ID` fails (common in containers with restricted syscalls), spprof automatically falls back to `CLOCK_MONOTONIC` (wall-time). This is transparent to the user but means sleeping threads will also be sampled.
+
 **Thread Registry (Dynamic Thread Tracking)**
 
 The Linux implementation uses a hash table (uthash) for dynamic thread tracking:
@@ -300,6 +302,65 @@ timer_settime(timer_id, 0, &zero, NULL);
 
 // Resume: Restore saved interval
 timer_settime(timer_id, 0, &saved_interval, NULL);
+```
+
+#### Linux Free-Threading (Speculative Capture)
+
+Python 3.13+ can be built with free-threading support (`--disable-gil`). spprof fully supports free-threaded Python on Linux via a speculative capture mechanism with multi-layer validation.
+
+**The Challenge:**
+
+Signal-based sampling on free-threaded Python is inherently racy because frame chains can change while being read. Unlike macOS where we can suspend threads, Linux signal handlers must work with a potentially-changing frame chain.
+
+**Solution: Speculative Capture with Validation**
+
+```c
+// Speculative capture with validation
+_spprof_InterpreterFrame *frame = SPPROF_ATOMIC_LOAD_PTR(&tstate->current_frame);
+
+while (frame && depth < max_frames) {
+    // 1. Validate pointer bounds and alignment
+    if (!_spprof_ptr_valid_speculative(frame)) break;
+    
+    // 2. Cycle detection (prevent infinite loops from corruption)
+    if (seen_before(frame)) { drop_sample(); return 0; }
+    
+    // 3. Type-check code object using cached PyCode_Type pointer
+    if (_spprof_looks_like_code(code)) {
+        frames[depth++] = code;
+    }
+    
+    // 4. Move to next frame with atomic load
+    frame = SPPROF_ATOMIC_LOAD_PTR(&frame->previous);
+}
+```
+
+**Safety Model:**
+
+| Check | Purpose |
+|-------|---------|
+| Pointer bounds | Detect freed/corrupted memory (heap range validation) |
+| 8-byte alignment | All Python objects are aligned |
+| Cycle detection | Prevent infinite loops from corrupted frame chains |
+| Type validation | Verify code object via cached `PyCode_Type` pointer |
+
+**Performance Characteristics:**
+
+- Race window during frame updates: ~10-50ns
+- Sampling interval: 10ms (default)
+- Collision probability: ~0.0005% per sample
+- Corrupted samples are safely dropped (increments `validation_drops` counter)
+
+**Memory Ordering:**
+
+- x86-64: Strong memory model, plain loads sufficient
+- ARM64: Uses acquire semantics via `SPPROF_ATOMIC_LOAD_PTR`
+
+**Monitoring Validation Drops:**
+
+```python
+stats = spprof.stats()
+# Check validation_drops in extended stats for free-threading health
 ```
 
 #### macOS (`darwin_mach.c`) - Mach-Based Sampler
@@ -491,18 +552,17 @@ The Mach sampler is **safe** for free-threaded Python builds because:
 3. **Critical Section**: `PyGILState_Ensure()` acquires the appropriate lock
 4. **Order of Operations**: Suspend → Read → INCREF → Resume
 
-In contrast, Linux signal-based sampling is **NOT safe** for free-threading because:
-- Signal interrupts thread at arbitrary point
-- Thread continues executing after signal handler returns
-- Frame chain can change during handler execution
+Linux signal-based sampling required special handling for free-threading safety. See the [Linux Free-Threading section](#linux-free-threading-speculative-capture) for details on how speculative capture with validation makes this safe.
 
 ```c
 // From pycore_frame.h:
 #if SPPROF_FREE_THREADED
     #if defined(__APPLE__)
         #define SPPROF_FREE_THREADING_SAFE 1  // Mach sampler is safe
+    #elif defined(__linux__)
+        #define SPPROF_FREE_THREADING_SAFE 1  // Speculative capture is safe
     #else
-        #define SPPROF_FREE_THREADING_SAFE 0  // Signal-based is NOT safe
+        #define SPPROF_FREE_THREADING_SAFE 0  // Other platforms not yet supported
     #endif
 #endif
 ```
@@ -535,7 +595,7 @@ If the target thread was suspended while holding the loader lock (e.g., during `
 | Iterate thread list | ✅ GIL protects linked list | ❌ List can change during iteration |
 | Access frame chain | ✅ Thread suspended, chain stable | ❌ Would need to cache, risk dangling ptrs |
 | INCREF code objects | ✅ Done while suspended + GIL | ❌ Cannot defer (GC race) |
-| Free-threading safe | ✅ Works with Py_GIL_DISABLED | ❌ Signal-based unsafe |
+| Free-threading safe | ✅ Works with Py_GIL_DISABLED | ✅ Linux uses speculative capture |
 
 The GIL hold time is an acceptable trade-off for correctness and safety. The profiler is designed for observability, not to be invisible. A few milliseconds of GIL hold time per sample is preferable to crashes, corrupted profiles, or use-after-free bugs.
 
@@ -737,9 +797,12 @@ Total: ~2KB per sample
 The profiler is designed to fail safely:
 
 1. **Invalid pointers in signal handler**: Pointer validation before dereference
-2. **Ring buffer full**: Samples dropped, counter incremented
+2. **Ring buffer full**: Samples dropped, counter incremented (check `profile.dropped_count`)
 3. **Invalid code objects in resolver**: Skip frame, log error
 4. **Thread termination**: Timers cleaned up automatically
+5. **Container restrictions**: Automatic fallback to wall-time sampling when CPU-time timers fail
+
+For troubleshooting common issues, see the [Troubleshooting Guide](TROUBLESHOOTING.md).
 
 ## Future Improvements
 
@@ -747,6 +810,8 @@ The profiler is designed to fail safely:
 
 - ✅ **Sample aggregation**: Reduce memory for repeated stacks via `profile.aggregate()`
 - ✅ **Native frame capture**: Mixed-mode profiling with C/C++ frames
+- ✅ **Linux free-threading support**: Speculative capture with validation for Python 3.13+
+- ✅ **macOS free-threading support**: Mach-based thread suspension sampling
 
 ### Planned
 
@@ -756,39 +821,16 @@ The profiler is designed to fail safely:
 
 ### Research / Long-Term
 
-#### Linux Free-Threading Support via PEP 669 (sys.monitoring)
+#### PEP 669 (sys.monitoring) Backend
 
-Python 3.13+ can be built with free-threading support (`--disable-gil`). Currently, spprof disables profiling on Linux free-threaded builds because signal-based sampling is unsafe (frame chains can change during handler execution).
+PEP 669 (`sys.monitoring`) provides a callback-based profiling API that could offer deterministic tracing as an alternative to statistical sampling:
 
-**Potential Solution: PEP 669 Backend**
+**Potential Benefits:**
+- Zero-overhead when disabled (no signal delivery)
+- Deterministic function entry/exit events
+- Built-in safe points for free-threading
 
-PEP 669 (`sys.monitoring`) provides a callback-based profiling API that is safe for free-threaded Python:
-
-```python
-# Conceptual API (Python side)
-import sys
-
-sys.monitoring.use_tool_id(sys.monitoring.PROFILER_ID)
-sys.monitoring.register_callback(
-    sys.monitoring.PROFILER_ID,
-    sys.monitoring.events.PY_START,
-    on_function_enter
-)
-```
-
-**Implementation Considerations:**
-
-1. **C API**: Use `PyMonitoring_RegisterCallback()` for zero-overhead integration
-2. **Sampling Emulation**: Record only every Nth event or check timestamp intervals
-3. **Trade-off**: Deterministic tracing vs statistical sampling (different overhead profile)
-4. **Hybrid Approach**: Use Mach sampler on macOS (already safe), PEP 669 on Linux free-threaded
-
-**Why Not Implement Now:**
-- Python 3.13 free-threaded builds are still experimental
-- The monitoring C API is new and evolving
-- Alternative profilers (py-spy, scalene) exist for this use case
-
-**Current Status:** Documented as future work. The Mach sampler already supports free-threading on macOS. Linux support requires a separate backend implementation.
+**Current Status:** The speculative capture approach provides good coverage with minimal drops. PEP 669 may be explored for use cases requiring deterministic tracing.
 
 ---
 

@@ -499,7 +499,7 @@ _spprof_capture_frames_extended(
         if (_spprof_ptr_valid(code)) {
             frames[count].code_ptr = (uintptr_t)code;
             frames[count].instr_ptr = (uintptr_t)_spprof_frame_get_instr_ptr(frame);
-            frames[count].owner = _spprof_frame_get_owner(frame);
+            frames[count].owner = (int8_t)_spprof_frame_get_owner(frame);
             count++;
         }
         
@@ -525,7 +525,7 @@ _spprof_capture_frames_extended(
         if (_spprof_ptr_valid(code)) {
             frames[count].code_ptr = (uintptr_t)code;
             frames[count].instr_ptr = (uintptr_t)_spprof_frame_get_instr_ptr(frame);
-            frames[count].owner = _spprof_frame_get_owner(frame);
+            frames[count].owner = (int8_t)_spprof_frame_get_owner(frame);
             count++;
         }
         

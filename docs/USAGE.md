@@ -265,7 +265,11 @@ my_samples = [
 
 ## Troubleshooting
 
-### "Profiler already running"
+For comprehensive troubleshooting, see the [Troubleshooting Guide](TROUBLESHOOTING.md).
+
+### Quick Fixes
+
+#### "Profiler already running"
 
 ```python
 # Check before starting
@@ -273,23 +277,44 @@ if not spprof.is_active():
     spprof.start()
 ```
 
-### No samples collected
+#### No samples collected
 
 1. Check if native extension loaded: `spprof._HAS_NATIVE`
 2. Verify workload runs long enough (at least 10x interval)
 3. Check for errors in `profile.dropped_count`
+4. For I/O-bound code on Linux, note that sleeping threads don't generate samples (CPU-time sampling)
 
-### High overhead
+#### High dropped sample count
 
-1. Increase sampling interval
-2. Disable native unwinding
+```python
+# Increase memory or reduce frequency
+spprof.start(interval_ms=10, memory_limit_mb=200)
+```
+
+#### High overhead
+
+1. Increase sampling interval (e.g., 10ms → 100ms)
+2. Disable native unwinding: `spprof.set_native_unwinding(False)`
 3. Check if resolver cache is effective
 
-### Missing thread samples (Linux)
+#### Missing thread samples (Linux)
 
 Register threads explicitly:
 ```python
 spprof.register_thread()  # Call from each thread
+```
+
+Or use the context manager:
+```python
+with spprof.ThreadProfiler():
+    do_work()
+```
+
+#### Container permission issues
+
+spprof falls back to wall-time sampling when CPU-time timers are restricted. For full support:
+```bash
+docker run --security-opt seccomp=unconfined myapp
 ```
 
 ## Platform Notes
@@ -299,16 +324,18 @@ spprof.register_thread()  # Call from each thread
 - Best support with per-thread CPU sampling
 - Uses `timer_create` with `SIGEV_THREAD_ID`
 - Each thread needs explicit registration
+- **Free-threading safe**: Python 3.13+ with `--disable-gil` is supported via speculative capture with validation
 
 ### macOS
 
-- Process-wide sampling (all threads automatically)
-- Uses `setitimer(ITIMER_PROF)`
+- All threads sampled automatically via Mach thread suspension
+- Uses `thread_suspend()`/`thread_resume()` for safe frame capture
 - Thread registration is a no-op
+- **Free-threading safe**: Full support for Python 3.13+ with `--disable-gil`
 
 ### Windows
 
-- Uses timer queue with thread suspension
+- Uses timer queue with GIL acquisition
 - All threads sampled automatically
 - Slightly higher overhead than Unix
 

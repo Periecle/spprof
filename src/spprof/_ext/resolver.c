@@ -27,7 +27,7 @@
 #if defined(__APPLE__) || defined(__linux__)
 #define SPPROF_HAS_DLADDR 1
 #ifndef _GNU_SOURCE
-#define _GNU_SOURCE
+#define _GNU_SOURCE 1
 #endif
 #include <dlfcn.h>
 #include <pthread.h>
@@ -39,6 +39,7 @@
 
 #include "resolver.h"
 #include "code_registry.h"
+#include "error.h"
 
 /*
  * _Py_CODEUNIT is an internal type not exposed in public headers for Python 3.13+.
@@ -134,16 +135,16 @@ static inline uint8_t lru_update_access(uint8_t lru_bits, int way) {
     switch (way) {
         case 0:
             /* Accessed W0: point away (bit0=1, bit1=1) */
-            return (lru_bits | 0x1) | 0x2;
+            return (uint8_t)((lru_bits | 0x1) | 0x2);
         case 1:
             /* Accessed W1: point away (bit0=1, bit1=0) */
-            return (lru_bits | 0x1) & ~0x2;
+            return (uint8_t)((lru_bits | 0x1) & ~0x2);
         case 2:
             /* Accessed W2: point away (bit0=0, bit2=1) */
-            return (lru_bits & ~0x1) | 0x4;
+            return (uint8_t)((lru_bits & ~0x1) | 0x4);
         case 3:
             /* Accessed W3: point away (bit0=0, bit2=0) */
-            return (lru_bits & ~0x1) & ~0x4;
+            return (uint8_t)((lru_bits & ~0x1) & ~0x4);
         default:
             return lru_bits;
     }
@@ -177,10 +178,14 @@ static void init_python_interpreter_base(void) {
     Dl_info info;
     
     /* Use Py_Initialize as a well-known symbol that's always in the Python library.
-     * We cast to void* to get the function address. */
+     * We need to cast function pointer to void* for dladdr - this is unavoidable
+     * and safe per POSIX (dlsym returns void* for functions). */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
     if (dladdr((void*)&Py_Initialize, &info) != 0 && info.dli_fbase != NULL) {
         g_python_lib_base = info.dli_fbase;
     }
+#pragma GCC diagnostic pop
     
     g_python_base_initialized = 1;
 }
@@ -240,6 +245,7 @@ static int is_python_interpreter_frame(void* lib_base, const char* lib_path) {
  * Legacy wrapper for backward compatibility.
  * Prefer is_python_interpreter_frame() which uses address-based detection.
  */
+SPPROF_UNUSED
 static int is_python_interpreter_library(const char* lib_path) {
     return is_python_interpreter_frame(NULL, lib_path);
 }
@@ -316,6 +322,7 @@ static int resolve_native_frame(uintptr_t pc, ResolvedFrame* out, int* is_interp
 
 #else /* !SPPROF_HAS_DLADDR */
 
+SPPROF_UNUSED
 static int is_python_interpreter_library(const char* lib_path) {
     (void)lib_path;
     return 0;
@@ -559,7 +566,7 @@ static int compute_lineno_from_instr(PyCodeObject* co, uintptr_t instr_ptr) {
     }
 
     /* Convert code unit offset to byte offset */
-    int byte_offset = (int)(offset * sizeof(_Py_CODEUNIT));
+    int byte_offset = (int)((size_t)offset * sizeof(_Py_CODEUNIT));
 
     /* Use the address-to-line API */
     int lineno = PyCode_Addr2Line((PyCodeObject*)co, byte_offset);
@@ -889,7 +896,7 @@ static int resolve_raw_sample(const RawSample* raw, ResolvedSample* out) {
      * don't add refs (can't call Python API from signal handler).
      */
     if (raw->depth > 0) {
-        code_registry_release_refs_batch(raw->frames, raw->depth);
+        code_registry_release_refs_batch(raw->frames, (size_t)raw->depth);
     }
 
     return out->depth > 0 ? 1 : 0;

@@ -259,7 +259,7 @@ void code_registry_release_ref(uintptr_t code_addr) {
     }
 }
 
-void code_registry_release_refs_batch(uintptr_t* code_addrs, size_t count) {
+void code_registry_release_refs_batch(const uintptr_t* code_addrs, size_t count) {
     if (!g_initialized || code_addrs == NULL || count == 0) {
         return;
     }

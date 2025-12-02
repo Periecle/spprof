@@ -19,7 +19,9 @@
 
 #ifdef __linux__
 
-#define _GNU_SOURCE
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 #include <Python.h>
 #include <signal.h>
 #include <time.h>
@@ -36,6 +38,7 @@
 #include "../framewalker.h"
 #include "../signal_handler.h"
 #include "../uthash.h"
+#include "../error.h"
 
 /* Forward declaration of global ring buffer */
 extern RingBuffer* g_ringbuffer;
@@ -356,6 +359,7 @@ static uint64_t registry_get_total_overruns(void) {
  *
  * @param count Number of overruns to add
  */
+SPPROF_UNUSED
 static void registry_add_overruns(uint64_t count) {
     atomic_fetch_add(&g_total_overruns, count);
 }
@@ -418,8 +422,8 @@ static int registry_resume_all(uint64_t interval_ns) {
     SPPROF_ASSERT_NOT_IN_SIGNAL("registry_resume_all");
     
     struct itimerspec its;
-    its.it_value.tv_sec = interval_ns / 1000000000ULL;
-    its.it_value.tv_nsec = interval_ns % 1000000000ULL;
+    its.it_value.tv_sec = (time_t)(interval_ns / 1000000000ULL);
+    its.it_value.tv_nsec = (long)(interval_ns % 1000000000ULL);
     its.it_interval = its.it_value;
     
     pthread_rwlock_wrlock(&g_registry_lock);
@@ -494,7 +498,7 @@ int platform_timer_create(uint64_t interval_ns) {
     signal_handler_start();
     
     /* Create timer for main thread */
-    pid_t tid = syscall(SYS_gettid);
+    pid_t tid = (pid_t)syscall(SYS_gettid);
     struct sigevent sev;
     memset(&sev, 0, sizeof(sev));
     sev.sigev_notify = SIGEV_THREAD_ID;
@@ -539,8 +543,8 @@ int platform_timer_create(uint64_t interval_ns) {
     
     /* Configure and start timer */
     struct itimerspec its;
-    its.it_value.tv_sec = interval_ns / 1000000000ULL;
-    its.it_value.tv_nsec = interval_ns % 1000000000ULL;
+    its.it_value.tv_sec = (time_t)(interval_ns / 1000000000ULL);
+    its.it_value.tv_nsec = (long)(interval_ns % 1000000000ULL);
     its.it_interval = its.it_value;
     
     if (timer_settime(g_main_timer, 0, &its, NULL) < 0) {
@@ -628,8 +632,8 @@ int platform_timer_pause(void) {
     if (timer_gettime(g_main_timer, &current) < 0) {
         return -1;
     }
-    g_saved_interval_ns = current.it_interval.tv_sec * 1000000000ULL 
-                        + current.it_interval.tv_nsec;
+    g_saved_interval_ns = (uint64_t)current.it_interval.tv_sec * 1000000000ULL 
+                        + (uint64_t)current.it_interval.tv_nsec;
     
     /* Disarm main timer */
     struct itimerspec zero = {0};
@@ -664,8 +668,8 @@ int platform_timer_resume(void) {
     
     /* Restore main timer interval */
     struct itimerspec its;
-    its.it_value.tv_sec = g_saved_interval_ns / 1000000000ULL;
-    its.it_value.tv_nsec = g_saved_interval_ns % 1000000000ULL;
+    its.it_value.tv_sec = (time_t)(g_saved_interval_ns / 1000000000ULL);
+    its.it_value.tv_nsec = (long)(g_saved_interval_ns % 1000000000ULL);
     its.it_interval = its.it_value;
     
     if (timer_settime(g_main_timer, 0, &its, NULL) < 0) {
@@ -698,7 +702,7 @@ int platform_register_thread(uint64_t interval_ns) {
         return 0;  /* Already registered */
     }
     
-    pid_t tid = syscall(SYS_gettid);
+    pid_t tid = (pid_t)syscall(SYS_gettid);
     
     /* Check if already in registry (e.g., re-registration) */
     if (registry_find_thread(tid) != NULL) {
@@ -747,8 +751,8 @@ int platform_register_thread(uint64_t interval_ns) {
     
     /* Configure and start timer */
     struct itimerspec its;
-    its.it_value.tv_sec = interval_ns / 1000000000ULL;
-    its.it_value.tv_nsec = interval_ns % 1000000000ULL;
+    its.it_value.tv_sec = (time_t)(interval_ns / 1000000000ULL);
+    its.it_value.tv_nsec = (long)(interval_ns % 1000000000ULL);
     its.it_interval = its.it_value;
     
     if (timer_settime(timer_id, 0, &its, NULL) < 0) {
@@ -773,7 +777,7 @@ int platform_unregister_thread(void) {
         return 0;
     }
     
-    pid_t tid = syscall(SYS_gettid);
+    pid_t tid = (pid_t)syscall(SYS_gettid);
     
     /* Remove from registry (handles timer deletion and overrun capture) */
     registry_remove_thread(tid);

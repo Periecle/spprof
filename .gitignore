@@ -30,6 +30,9 @@ MANIFEST
 *.dll
 *.dylib
 *.dSYM/
+builddir/
+builddir-asan/
+builddir-pedantic/
 
 # Virtual environments
 .venv/
