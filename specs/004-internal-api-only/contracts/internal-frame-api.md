@@ -323,3 +323,4 @@ Existing code using the internal API mode requires no changes. Code relying on p
 | Regular thread | ✅ Safe | ✅ Safe | ✅ Safe with suspension |
 | GIL held | ✅ Safe | ✅ Safe | N/A |
 
+

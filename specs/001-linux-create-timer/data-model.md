@@ -267,3 +267,4 @@ void platform_get_extended_stats(TimerStatistics* stats) {
 | PAUSED | DELETED | `platform_cleanup` | `timer_delete` called |
 
 
+

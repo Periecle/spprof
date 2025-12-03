@@ -529,3 +529,4 @@ PyThreadState
 
 4. **Pointer Validation**: All pointer accesses must use `_spprof_ptr_valid()` before dereferencing.
 
+

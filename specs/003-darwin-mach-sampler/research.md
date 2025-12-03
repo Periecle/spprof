@@ -387,3 +387,4 @@ size_t registry_snapshot(ThreadRegistry* r, thread_act_t* out, size_t max) {
 | API deprecation | Very Low | High | Apple APIs stable; monitor WWDC |
 
 
+

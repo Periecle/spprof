@@ -36,3 +36,4 @@
 - Key technical context: The spec references internal Python structures which is domain-specific terminology necessary for understanding the feature scope, but avoids prescribing specific implementation approaches
 - Assumption documented: Python internal struct layouts remain stable within minor version series
 
+
