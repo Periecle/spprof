@@ -32,6 +32,12 @@
 #include "signal_handler.h"
 #include "code_registry.h"
 
+/* Memory profiler */
+#include "memprof/memprof.h"
+#include "memprof/heap_map.h"
+#include "memprof/stack_intern.h"
+#include "memprof/stack_capture.h"
+
 /*
  * Include internal headers for free-threading detection.
  * The SPPROF_FREE_THREADING_SAFE macro is defined in pycore_frame.h.
@@ -633,6 +639,208 @@ static PyObject* spprof_get_code_registry_stats(PyObject* self, PyObject* args) 
     );
 }
 
+/* ============================================================================
+ * Memory Profiler Python Bindings
+ * ============================================================================ */
+
+
+/**
+ * _memprof_init(sampling_rate_bytes) - Initialize memory profiler
+ */
+static PyObject* spprof_memprof_init(PyObject* self, PyObject* args) {
+    uint64_t sampling_rate = MEMPROF_DEFAULT_SAMPLING_RATE;
+    
+    if (!PyArg_ParseTuple(args, "|K", &sampling_rate)) {
+        return NULL;
+    }
+    
+    int result = memprof_init(sampling_rate);
+    return PyLong_FromLong(result);
+}
+
+/**
+ * _memprof_start() - Start memory profiling
+ */
+static PyObject* spprof_memprof_start(PyObject* self, PyObject* args) {
+    int result = memprof_start();
+    return PyLong_FromLong(result);
+}
+
+/**
+ * _memprof_stop() - Stop memory profiling (new allocations only)
+ */
+static PyObject* spprof_memprof_stop(PyObject* self, PyObject* args) {
+    int result = memprof_stop();
+    return PyLong_FromLong(result);
+}
+
+/**
+ * _memprof_shutdown() - Shutdown memory profiler
+ */
+static PyObject* spprof_memprof_shutdown(PyObject* self, PyObject* args) {
+    memprof_shutdown();
+    Py_RETURN_NONE;
+}
+
+/**
+ * _memprof_get_stats() - Get memory profiler statistics
+ */
+static PyObject* spprof_memprof_get_stats(PyObject* self, PyObject* args) {
+    MemProfStats stats;
+    
+    if (memprof_get_stats(&stats) != 0) {
+        Py_RETURN_NONE;
+    }
+    
+    return Py_BuildValue(
+        "{s:K, s:K, s:K, s:I, s:K, s:f, s:K, s:K, s:K, s:K, s:K}",
+        "total_samples", (unsigned long long)stats.total_samples,
+        "live_samples", (unsigned long long)stats.live_samples,
+        "freed_samples", (unsigned long long)stats.freed_samples,
+        "unique_stacks", (unsigned int)stats.unique_stacks,
+        "estimated_heap_bytes", (unsigned long long)stats.estimated_heap_bytes,
+        "heap_map_load_percent", stats.heap_map_load_percent,
+        "collisions", (unsigned long long)stats.collisions,
+        "sampling_rate_bytes", (unsigned long long)stats.sampling_rate_bytes,
+        "shallow_stack_warnings", (unsigned long long)stats.shallow_stack_warnings,
+        "death_during_birth", (unsigned long long)stats.death_during_birth,
+        "zombie_races_detected", (unsigned long long)stats.zombie_races_detected
+    );
+}
+
+/**
+ * _memprof_get_snapshot() - Get snapshot of live allocations
+ */
+static PyObject* spprof_memprof_get_snapshot(PyObject* self, PyObject* args) {
+    HeapMapEntry* entries = NULL;
+    size_t count = 0;
+    
+    if (memprof_get_snapshot(&entries, &count) != 0) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to get memory snapshot");
+        return NULL;
+    }
+    
+    /* Build result dict */
+    PyObject* result = PyDict_New();
+    if (!result) {
+        memprof_free_snapshot(entries);
+        return NULL;
+    }
+    
+    /* Build entries list */
+    PyObject* entries_list = PyList_New((Py_ssize_t)count);
+    if (!entries_list) {
+        Py_DECREF(result);
+        memprof_free_snapshot(entries);
+        return NULL;
+    }
+    
+    for (size_t i = 0; i < count; i++) {
+        HeapMapEntry* entry = &entries[i];
+        
+        uintptr_t ptr = atomic_load(&entry->ptr);
+        uint64_t metadata = atomic_load(&entry->metadata);
+        uint64_t birth_seq = atomic_load(&entry->birth_seq);
+        uint64_t timestamp = entry->timestamp;
+        
+        uint32_t stack_id = METADATA_STACK_ID(metadata);
+        uint32_t size = METADATA_SIZE(metadata);
+        uint32_t weight = METADATA_WEIGHT(metadata);
+        
+        /* Build stack frames list */
+        PyObject* stack_list = PyList_New(0);
+        if (!stack_list) {
+            Py_DECREF(entries_list);
+            Py_DECREF(result);
+            memprof_free_snapshot(entries);
+            return NULL;
+        }
+        
+        /* Get resolved stack if available */
+        const StackEntry* stack_entry = stack_table_get(stack_id);
+        if (stack_entry && (stack_entry->flags & STACK_FLAG_RESOLVED)) {
+            for (int j = 0; j < stack_entry->depth; j++) {
+                PyObject* frame_dict = Py_BuildValue(
+                    "{s:K, s:s, s:s, s:i, s:O}",
+                    "address", (unsigned long long)stack_entry->frames[j],
+                    "function", stack_entry->function_names ? 
+                                stack_entry->function_names[j] : "<unknown>",
+                    "file", stack_entry->file_names ?
+                            stack_entry->file_names[j] : "<unknown>",
+                    "line", stack_entry->line_numbers ?
+                            stack_entry->line_numbers[j] : 0,
+                    "is_python", Py_False
+                );
+                
+                if (!frame_dict || PyList_Append(stack_list, frame_dict) < 0) {
+                    Py_XDECREF(frame_dict);
+                    Py_DECREF(stack_list);
+                    Py_DECREF(entries_list);
+                    Py_DECREF(result);
+                    memprof_free_snapshot(entries);
+                    return NULL;
+                }
+                Py_DECREF(frame_dict);
+            }
+        }
+        
+        /* Build entry dict */
+        PyObject* entry_dict = Py_BuildValue(
+            "{s:K, s:I, s:I, s:K, s:K, s:O}",
+            "address", (unsigned long long)ptr,
+            "size", (unsigned int)size,
+            "weight", (unsigned int)weight,
+            "timestamp_ns", (unsigned long long)timestamp,
+            "birth_seq", (unsigned long long)birth_seq,
+            "stack", stack_list
+        );
+        
+        Py_DECREF(stack_list);
+        
+        if (!entry_dict) {
+            Py_DECREF(entries_list);
+            Py_DECREF(result);
+            memprof_free_snapshot(entries);
+            return NULL;
+        }
+        
+        PyList_SET_ITEM(entries_list, (Py_ssize_t)i, entry_dict);
+    }
+    
+    /* Add entries to result */
+    PyDict_SetItemString(result, "entries", entries_list);
+    Py_DECREF(entries_list);
+    
+    /* Get frame pointer health */
+    uint64_t shallow_warnings = 0, total_stacks = 0;
+    float avg_depth = 0.0f;
+    int min_depth = 0;
+    get_frame_pointer_health(&shallow_warnings, &total_stacks, &avg_depth, &min_depth);
+    
+    PyObject* fp_health = Py_BuildValue(
+        "{s:K, s:K, s:f, s:i}",
+        "shallow_stack_warnings", (unsigned long long)shallow_warnings,
+        "total_native_stacks", (unsigned long long)total_stacks,
+        "avg_native_depth", avg_depth,
+        "min_native_depth", min_depth
+    );
+    
+    if (fp_health) {
+        PyDict_SetItemString(result, "frame_pointer_health", fp_health);
+        Py_DECREF(fp_health);
+    }
+    
+    /* Add total samples */
+    MemProfStats stats;
+    if (memprof_get_stats(&stats) == 0) {
+        PyDict_SetItemString(result, "total_samples", 
+                             PyLong_FromUnsignedLongLong(stats.total_samples));
+    }
+    
+    memprof_free_snapshot(entries);
+    return result;
+}
+
 /* Method table */
 static PyMethodDef SpProfMethods[] = {
     {"_start", (PyCFunction)(void(*)(void))spprof_start, METH_VARARGS | METH_KEYWORDS,
@@ -667,6 +875,19 @@ static PyMethodDef SpProfMethods[] = {
      "Check if safe mode is enabled."},
     {"_get_code_registry_stats", spprof_get_code_registry_stats, METH_NOARGS,
      "Get code registry statistics including safe mode rejects."},
+    /* Memory profiler methods */
+    {"_memprof_init", spprof_memprof_init, METH_VARARGS,
+     "Initialize memory profiler with sampling rate."},
+    {"_memprof_start", spprof_memprof_start, METH_NOARGS,
+     "Start memory profiling."},
+    {"_memprof_stop", spprof_memprof_stop, METH_NOARGS,
+     "Stop memory profiling (new allocations only)."},
+    {"_memprof_shutdown", spprof_memprof_shutdown, METH_NOARGS,
+     "Shutdown memory profiler."},
+    {"_memprof_get_stats", spprof_memprof_get_stats, METH_NOARGS,
+     "Get memory profiler statistics."},
+    {"_memprof_get_snapshot", spprof_memprof_get_snapshot, METH_NOARGS,
+     "Get snapshot of live allocations."},
     {NULL, NULL, 0, NULL}
 };
 
