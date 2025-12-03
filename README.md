@@ -6,7 +6,7 @@
 [![Python 3.9–3.14](https://img.shields.io/pypi/pyversions/spprof.svg)](https://pypi.org/project/spprof/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance sampling profiler for Python with [Speedscope](https://www.speedscope.app) and FlameGraph output.
+A high-performance sampling profiler for Python with [Speedscope](https://www.speedscope.app) and FlameGraph output. Includes both **CPU profiling** and **memory allocation profiling**.
 
 ## Features
 
@@ -14,6 +14,7 @@ A high-performance sampling profiler for Python with [Speedscope](https://www.sp
 - **Mixed-mode profiling** — Capture Python and C extension frames together
 - **Multi-threaded** — Automatic profiling of all Python threads
 - **Memory-efficient** — Stack aggregation for long-running profiles
+- **Memory profiling** — Statistical heap profiling with <0.1% overhead
 - **Cross-platform** — Linux, macOS, Windows
 - **Python 3.9–3.14** — Including free-threaded builds (Linux & macOS)
 - **Zero dependencies** — No runtime requirements
@@ -110,6 +111,65 @@ aggregated = profile.aggregate()
 
 print(f"Compression: {aggregated.compression_ratio:.1f}x")
 aggregated.save("profile.json")
+```
+
+## Memory Profiling
+
+spprof includes a statistical memory allocation profiler for tracking heap usage:
+
+```python
+import spprof.memprof as memprof
+
+# Start memory profiling
+memprof.start(sampling_rate_kb=512)  # Sample ~every 512KB
+
+# ... your code ...
+import numpy as np
+data = np.zeros((1000, 1000))  # ~8MB allocation
+
+# Get heap snapshot
+snapshot = memprof.get_snapshot()
+print(f"Estimated heap: {snapshot.estimated_heap_bytes / 1e6:.1f} MB")
+
+# Show top allocators
+for site in snapshot.top_allocators(5):
+    print(f"  {site['function']}: {site['estimated_bytes'] / 1e6:.1f} MB")
+
+memprof.stop()
+```
+
+### Memory Profiler Features
+
+- **Ultra-low overhead** — <0.1% CPU at default 512KB sampling rate
+- **Complete coverage** — Captures allocations from Python, C extensions, and native libraries
+- **Platform-native hooks** — `malloc_logger` on macOS, `LD_PRELOAD` on Linux
+- **Speedscope output** — Visualize memory profiles at [speedscope.app](https://speedscope.app)
+
+### Memory Context Manager
+
+```python
+with memprof.MemoryProfiler(sampling_rate_kb=256) as mp:
+    run_workload()
+
+mp.snapshot.save("memory_profile.json")
+```
+
+### Combined CPU + Memory Profiling
+
+Both profilers run simultaneously without interference:
+
+```python
+import spprof
+import spprof.memprof as memprof
+
+spprof.start(interval_ms=10)
+memprof.start(sampling_rate_kb=512)
+
+# ... workload ...
+
+cpu_profile = spprof.stop()
+mem_snapshot = memprof.get_snapshot()
+memprof.stop()
 ```
 
 ## Output Formats

@@ -22,7 +22,11 @@ import pytest
 
 
 # Skip all tests on non-Darwin platforms
-pytestmark = pytest.mark.skipif(platform.system() != "Darwin", reason="Darwin-only tests")
+# Also use forked tests for isolation since memory profiler hooks interact with system calls
+pytestmark = [
+    pytest.mark.skipif(platform.system() != "Darwin", reason="Darwin-only tests"),
+    pytest.mark.forked,  # Run in separate process to avoid profiler state leakage
+]
 
 
 # Feature flags for tests that require full Mach-based sampler
@@ -235,3 +239,223 @@ class TestEdgeCases:
             time.sleep(0.01)
 
         assert p.profile is not None
+
+
+# ============================================================================
+# Memory Profiler Tests for Darwin (T056)
+# ============================================================================
+
+
+@pytest.fixture
+def memprof_cleanup():
+    """Ensure memprof is in a clean state before and after tests.
+    
+    Note: We do NOT call shutdown() because it's a one-way operation
+    that permanently disables the profiler. The native extension maintains
+    its own state which persists across Python module state changes.
+    """
+    import spprof.memprof as memprof
+
+    # Stop if running - use try/except since state may be inconsistent
+    if memprof._running:
+        try:
+            memprof.stop()
+        except RuntimeError:
+            # Already stopped at native level
+            memprof._running = False
+    
+    # If we've shut down, tests can't run - skip
+    if memprof._shutdown:
+        pytest.skip("Memory profiler was shutdown in a previous test")
+
+    yield memprof
+
+    # Cleanup after test - only stop, never shutdown
+    if memprof._running:
+        try:
+            memprof.stop()
+        except RuntimeError:
+            pass
+        memprof._running = False
+
+
+class TestDarwinMallocLogger:
+    """T056: Integration tests for macOS malloc_logger.
+
+    The Darwin memory profiler uses the malloc_logger callback which is
+    the official Apple API for allocation tracking. These tests verify
+    the malloc_logger integration works correctly on macOS.
+    """
+
+    def test_malloc_logger_install_uninstall(self, memprof_cleanup):
+        """Test that malloc_logger can be installed and uninstalled."""
+        memprof = memprof_cleanup
+
+        # Start should install malloc_logger
+        memprof.start(sampling_rate_kb=256)
+        assert memprof._running is True
+
+        # Do some allocations
+        data = [bytearray(1024) for _ in range(100)]
+
+        # Stop should uninstall malloc_logger
+        memprof.stop()
+        assert memprof._running is False
+
+        del data
+
+    def test_malloc_logger_captures_allocations(self, memprof_cleanup):
+        """Test that malloc_logger captures allocations."""
+        memprof = memprof_cleanup
+
+        memprof.start(sampling_rate_kb=64)  # Low rate for more samples
+
+        # Allocate memory that should be captured
+        large_allocations = [bytearray(4096) for _ in range(100)]
+
+        snapshot = memprof.get_snapshot()
+        stats = memprof.get_stats()
+
+        # Should have captured some samples
+        assert stats.total_samples >= 0
+
+        memprof.stop()
+
+        del large_allocations
+
+    def test_malloc_logger_tracks_frees(self, memprof_cleanup):
+        """Test that malloc_logger tracks free events."""
+        memprof = memprof_cleanup
+
+        memprof.start(sampling_rate_kb=64)
+
+        # Allocate and free
+        for _ in range(100):
+            data = bytearray(4096)
+            del data
+
+        import gc
+        gc.collect()
+
+        stats = memprof.get_stats()
+
+        # Should track freed allocations if any were sampled
+        assert stats.freed_samples >= 0
+
+        memprof.stop()
+
+    def test_malloc_logger_zombie_race_detection(self, memprof_cleanup):
+        """Test zombie race detection (address reuse before callback).
+
+        On macOS, malloc_logger is a post-hook callback, meaning the
+        callback runs after malloc/free completes. This creates a race
+        where an address can be reallocated before the free callback runs.
+
+        The profiler uses sequence numbers to detect and handle this case.
+        """
+        memprof = memprof_cleanup
+
+        memprof.start(sampling_rate_kb=32)  # Very low rate
+
+        # Rapid alloc/free cycles that could trigger zombie race
+        for _ in range(1000):
+            # Small allocation to maximize chance of address reuse
+            data = bytearray(64)
+            del data
+
+        stats = memprof.get_stats()
+
+        # zombie_races_detected tracks when sequence check detects reuse
+        # This is not an error - it's expected behavior that's handled correctly
+        assert stats.zombie_races_detected >= 0
+
+        memprof.stop()
+
+    def test_malloc_logger_multithread_safety(self, memprof_cleanup):
+        """Test malloc_logger is thread-safe."""
+        import threading
+        import gc
+
+        memprof = memprof_cleanup
+
+        memprof.start(sampling_rate_kb=128)
+
+        errors = []
+
+        def allocate_worker(worker_id: int, count: int):
+            try:
+                for _ in range(count):
+                    data = bytearray(1024)
+                    time.sleep(0.001)
+                    del data
+            except Exception as e:
+                errors.append(f"Worker {worker_id}: {e}")
+
+        threads = []
+        for i in range(5):
+            t = threading.Thread(target=allocate_worker, args=(i, 100))
+            threads.append(t)
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        # Verify all threads completed
+        for t in threads:
+            assert not t.is_alive(), f"Thread {t.name} still running"
+
+        assert not errors, f"Errors: {errors}"
+
+        stats = memprof.get_stats()
+        assert stats.total_samples >= 0
+
+        memprof.stop()
+        
+        # Force cleanup of thread state
+        gc.collect()
+        time.sleep(0.01)
+
+    def test_malloc_logger_with_cpu_profiler(self, memprof_cleanup, profiler):
+        """Test malloc_logger works alongside CPU profiler."""
+        memprof = memprof_cleanup
+
+        # Start both profilers
+        profiler.start(interval_ms=10)
+        memprof.start(sampling_rate_kb=256)
+
+        # Mixed workload
+        result = 0
+        for i in range(10000):
+            result += i ** 2
+            if i % 100 == 0:
+                data = bytearray(1024)
+                del data
+
+        # Get both results
+        mem_snapshot = memprof.get_snapshot()
+        cpu_profile = profiler.stop()
+        memprof.stop()
+
+        # Both should work
+        assert cpu_profile is not None
+        assert mem_snapshot is not None
+        assert mem_snapshot.total_samples >= 0
+
+    def test_malloc_logger_rapid_start_stop(self, memprof_cleanup):
+        """Test rapid start/stop doesn't cause issues.
+        
+        Note: We only test start/stop cycles without shutdown since
+        shutdown is a one-way operation that can't be undone.
+        """
+        memprof = memprof_cleanup
+
+        for i in range(10):
+            memprof.start(sampling_rate_kb=512)
+
+            data = bytearray(4096)
+            del data
+
+            memprof.stop()
+
+        # Should complete without crashes

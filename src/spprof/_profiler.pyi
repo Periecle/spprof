@@ -80,6 +80,73 @@ def _get_code_registry_stats() -> dict[str, Any]:
     """
     ...
 
+# --- Memory Profiler Internal Functions ---
+# These are implementation details; use spprof.memprof.* public API instead.
+
+def _memprof_init(sampling_rate_bytes: int = 524288) -> int:
+    """Initialize memory profiler with sampling rate.
+
+    Args:
+        sampling_rate_bytes: Average bytes between samples (default 512KB)
+
+    Returns:
+        0 on success, -1 on error
+    """
+    ...
+
+def _memprof_start() -> int:
+    """Start memory profiling.
+
+    Returns:
+        0 on success, -1 if already running or not initialized
+    """
+    ...
+
+def _memprof_stop() -> int:
+    """Stop memory profiling (new allocations only, frees still tracked).
+
+    Returns:
+        0 on success, -1 if not running
+    """
+    ...
+
+def _memprof_shutdown() -> None:
+    """Shutdown memory profiler completely (one-way door)."""
+    ...
+
+def _memprof_get_stats() -> dict[str, Any] | None:
+    """Get memory profiler statistics.
+
+    Returns:
+        Dict with stats or None if not initialized. Keys include:
+        - total_samples: Total allocations sampled
+        - live_samples: Samples still live (not freed)
+        - freed_samples: Samples that have been freed
+        - unique_stacks: Number of unique stack traces
+        - estimated_heap_bytes: Estimated live heap size
+        - heap_map_load_percent: Heap map utilization (0-100)
+        - collisions: Hash table collisions
+        - sampling_rate_bytes: Configured sampling rate
+        - shallow_stack_warnings: Stacks truncated due to missing frame pointers
+        - death_during_birth: Free during allocation race count
+        - zombie_races_detected: macOS ABA race detections
+    """
+    ...
+
+def _memprof_get_snapshot() -> dict[str, Any]:
+    """Get snapshot of live allocations.
+
+    Returns:
+        Dict containing:
+        - entries: List of allocation entries with address, size, weight, stack
+        - frame_pointer_health: Dict with stack capture quality metrics
+        - total_samples: Total samples collected
+
+    Raises:
+        RuntimeError: If snapshot retrieval fails
+    """
+    ...
+
 # --- Module Constants ---
 
 __version__: str
@@ -87,3 +154,5 @@ platform: str
 frame_walker: str
 unwind_method: str
 native_unwinding_available: int
+free_threaded_build: int
+free_threading_safe: int
