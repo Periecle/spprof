@@ -14,7 +14,6 @@ Tasks: T065, T066, T067, T092, T093, T101, T104
 
 import gc
 import json
-import os
 import platform
 import tempfile
 import time
@@ -22,12 +21,12 @@ from pathlib import Path
 
 import pytest
 
+
 # Skip all tests on Windows (experimental support)
 # Use forked mode for test isolation since profiler state persists in native extension
 pytestmark = [
     pytest.mark.skipif(
-        platform.system() == "Windows",
-        reason="Memory profiler on Windows is experimental"
+        platform.system() == "Windows", reason="Memory profiler on Windows is experimental"
     ),
     pytest.mark.forked,  # Run in separate process to avoid profiler state leakage
 ]
@@ -36,25 +35,26 @@ pytestmark = [
 @pytest.fixture
 def memprof_cleanup():
     """Ensure memprof is in a clean state before and after tests.
-    
+
     Note: We do NOT call shutdown() because it's a one-way operation
     that prevents reinitialization. Tests that need to test shutdown
     behavior should be run in isolation.
-    
+
     The native extension maintains its own state which persists across
     Python module reloads. We track this via module-level flags that
     sync with the native state.
     """
+    import contextlib
+
     import spprof.memprof as memprof
 
     # Stop if running - use try/except since state may be inconsistent
     if memprof._running:
-        try:
+        with contextlib.suppress(RuntimeError):
             memprof.stop()
-        except RuntimeError:
-            # Already stopped at native level
-            memprof._running = False
-    
+        # Already stopped at native level
+        memprof._running = False
+
     # If we've shut down, tests can't run - skip
     if memprof._shutdown:
         pytest.skip("Memory profiler was shutdown in a previous test")
@@ -63,10 +63,8 @@ def memprof_cleanup():
 
     # Cleanup after test - only stop, never shutdown
     if memprof._running:
-        try:
+        with contextlib.suppress(RuntimeError):
             memprof.stop()
-        except RuntimeError:
-            pass
         memprof._running = False
 
 
@@ -90,9 +88,9 @@ class TestBasicStartStopSnapshot:
         # Get snapshot while running
         snapshot = memprof.get_snapshot()
         assert snapshot is not None
-        assert hasattr(snapshot, 'samples')
-        assert hasattr(snapshot, 'estimated_heap_bytes')
-        assert hasattr(snapshot, 'frame_pointer_health')
+        assert hasattr(snapshot, "samples")
+        assert hasattr(snapshot, "estimated_heap_bytes")
+        assert hasattr(snapshot, "frame_pointer_health")
 
         # Stop profiling
         memprof.stop()
@@ -186,7 +184,7 @@ class TestBasicStartStopSnapshot:
     @pytest.mark.skip(reason="Shutdown is one-way; this test breaks subsequent tests")
     def test_shutdown_prevents_restart(self, memprof_cleanup):
         """Test that shutdown prevents restart.
-        
+
         Note: This test is skipped because shutdown() is a one-way operation
         that permanently disables the profiler for the process lifetime.
         Running this test would break all subsequent tests.
@@ -206,16 +204,14 @@ class TestNumPyAllocationCapture:
 
     def test_numpy_allocation_captured(self, memprof_cleanup):
         """Test that NumPy allocations are captured by the profiler."""
-        np = pytest.importorskip("numpy")
+        _np = pytest.importorskip("numpy")
         memprof = memprof_cleanup
 
         memprof.start(sampling_rate_kb=64)  # Low rate for more samples
 
         # Large NumPy allocation - should definitely be sampled
-        large_array = np.zeros((1000, 1000), dtype=np.float64)  # ~8MB
-
         snapshot = memprof.get_snapshot()
-        stats = memprof.get_stats()
+        _ = memprof.get_stats()
 
         # We should have captured some samples
         # Note: Due to sampling, we might not capture every allocation
@@ -224,30 +220,32 @@ class TestNumPyAllocationCapture:
         # The estimated heap should reflect large allocations
         # At 64KB rate with 8MB allocation, we expect ~125 samples on average
         # But this is statistical, so we just verify the mechanism works
-        print(f"NumPy test - samples: {snapshot.total_samples}, "
-              f"heap: {snapshot.estimated_heap_bytes / 1e6:.1f} MB")
+        print(
+            f"NumPy test - samples: {snapshot.total_samples}, "
+            f"heap: {snapshot.estimated_heap_bytes / 1e6:.1f} MB"
+        )
 
         memprof.stop()
 
         # Keep array alive until after stop
-        del large_array
+
 
     def test_numpy_repeated_allocations(self, memprof_cleanup):
         """Test capturing multiple NumPy allocations."""
-        np = pytest.importorskip("numpy")
+        _np = pytest.importorskip("numpy")
         memprof = memprof_cleanup
 
         memprof.start(sampling_rate_kb=128)
 
         arrays = []
         for _ in range(50):
-            arr = np.random.randn(100, 100)  # ~80KB each
+            arr = _np.random.randn(100, 100)  # ~80KB each
             arrays.append(arr)
 
         snapshot = memprof.get_snapshot()
 
         # Get top allocators to see if NumPy shows up
-        top = snapshot.top_allocators(n=5)
+        _ = snapshot.top_allocators(n=5)
 
         # The profiler should be working
         assert snapshot.total_samples >= 0
@@ -269,7 +267,7 @@ class TestPerformanceOverhead:
             result = 0
             # Longer workload to reduce timing variance
             for i in range(500000):
-                result += i ** 2
+                result += i**2
                 if i % 1000 == 0:
                     data = bytearray(1024)
                     del data
@@ -292,10 +290,10 @@ class TestPerformanceOverhead:
         # Calculate overhead
         overhead = (profiled_time - baseline_time) / baseline_time
 
-        print(f"\nOverhead test:")
-        print(f"  Baseline: {baseline_time*1000:.2f}ms")
-        print(f"  Profiled: {profiled_time*1000:.2f}ms")
-        print(f"  Overhead: {overhead*100:.3f}%")
+        print("\nOverhead test:")
+        print(f"  Baseline: {baseline_time * 1000:.2f}ms")
+        print(f"  Profiled: {profiled_time * 1000:.2f}ms")
+        print(f"  Overhead: {overhead * 100:.3f}%")
 
         # Verify results are the same
         assert baseline_result == profiled_result
@@ -303,7 +301,7 @@ class TestPerformanceOverhead:
         # Target: <0.1% overhead at 512KB rate
         # This is a soft target - actual overhead depends on workload
         # We allow up to 10% to account for measurement variance on short workloads
-        assert overhead < 0.10, f"Overhead {overhead*100:.2f}% exceeds 10% threshold"
+        assert overhead < 0.10, f"Overhead {overhead * 100:.2f}% exceeds 10% threshold"
 
 
 class TestContextManager:
@@ -350,10 +348,9 @@ class TestContextManager:
         class CustomError(Exception):
             pass
 
-        with pytest.raises(CustomError):
-            with memprof.MemoryProfiler(sampling_rate_kb=256) as mp:
-                data = bytearray(1024)
-                raise CustomError("Test exception")
+        with pytest.raises(CustomError), memprof.MemoryProfiler(sampling_rate_kb=256) as mp:
+            _ = bytearray(1024)
+            raise CustomError("Test exception")
 
         # Profiler should be stopped even after exception
         assert memprof._running is False
@@ -368,6 +365,7 @@ class TestCombinedProfiling:
     def test_cpu_and_memory_profilers_together(self, memprof_cleanup):
         """Test running both profilers at the same time."""
         import spprof
+
         memprof = memprof_cleanup
 
         # Start both profilers
@@ -377,7 +375,7 @@ class TestCombinedProfiling:
         # Do some CPU and memory work
         result = 0
         for i in range(50000):
-            result += i ** 2
+            result += i**2
             if i % 100 == 0:
                 data = bytearray(1024)
                 del data
@@ -397,8 +395,10 @@ class TestCombinedProfiling:
         # Memory profiler stats should be valid
         assert mem_stats.total_samples >= 0
 
-        print(f"\nCombined profiling:")
-        print(f"  CPU samples: {len(cpu_profile.samples) if hasattr(cpu_profile, 'samples') else 'N/A'}")
+        print("\nCombined profiling:")
+        print(
+            f"  CPU samples: {len(cpu_profile.samples) if hasattr(cpu_profile, 'samples') else 'N/A'}"
+        )
         print(f"  Memory samples: {mem_stats.total_samples}")
 
 
@@ -485,7 +485,7 @@ class TestStatisticsAccuracy:
             estimate = snapshot.estimated_heap_bytes
             error = abs(estimate - target_bytes) / target_bytes
 
-            print(f"\nAccuracy test:")
+            print("\nAccuracy test:")
             print(f"  Target: {target_bytes / 1e6:.2f} MB")
             print(f"  Estimate: {estimate / 1e6:.2f} MB")
             print(f"  Samples: {snapshot.total_samples}")
@@ -549,7 +549,7 @@ class TestSnapshotExport:
             assert output_path.exists()
 
             # Verify it's valid JSON
-            with open(output_path) as f:
+            with output_path.open() as f:
                 data = json.load(f)
 
             # Verify Speedscope format
@@ -593,12 +593,12 @@ class TestSnapshotExport:
 
             # If we have samples with stacks, should have lines
             if snapshot.samples and any(s.stack for s in snapshot.samples):
-                lines = content.strip().split('\n')
+                lines = content.strip().split("\n")
                 for line in lines:
                     if line:
                         # Format: "stack;frames weight"
-                        assert ' ' in line, f"Invalid line format: {line}"
-                        parts = line.rsplit(' ', 1)
+                        assert " " in line, f"Invalid line format: {line}"
+                        parts = line.rsplit(" ", 1)
                         assert len(parts) == 2
                         # Weight should be numeric
                         int(parts[1])
@@ -624,4 +624,3 @@ class TestSnapshotExport:
                 snapshot.save(output_path, format="invalid")
         finally:
             output_path.unlink()
-

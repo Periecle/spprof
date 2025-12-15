@@ -4,10 +4,34 @@
  * Many allocations share the same call site. Interning saves memory and
  * enables O(1) stack comparison via stack_id. The table uses lock-free
  * CAS operations for concurrent insertion.
+ *
+ * THREAD SAFETY:
+ *   stack_table_intern() is thread-safe using CAS on the hash field.
+ *   Duplicate insertions are harmless (same stack → same ID).
+ *
+ * MEMORY MANAGEMENT:
+ *   Uses mmap/VirtualAlloc for backing memory (not malloc).
+ *   Supports dynamic resizing:
+ *     - Linux: mremap() for efficient in-place growth
+ *     - macOS/Windows: allocate new + copy + free old
+ *
+ * PLATFORM SUPPORT:
+ *   - Linux: mmap, mremap
+ *   - macOS: mmap
+ *   - Windows: VirtualAlloc, VirtualFree
+ *
+ * Copyright (c) 2024 spprof contributors
  */
 
 #ifndef SPPROF_STACK_INTERN_H
 #define SPPROF_STACK_INTERN_H
+
+/* _GNU_SOURCE for mremap() on Linux - must be before any system headers */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#endif
 
 #include "memprof.h"
 #include <stdint.h>

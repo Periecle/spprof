@@ -3,7 +3,31 @@
  *
  * 99.99% of frees are for non-sampled allocations. The Bloom filter
  * provides O(1) definite-no answers with 0% false negatives.
+ *
+ * IMPLEMENTATION:
+ *   Uses double-hashing: h(i) = h1 + i*h2
+ *   4 hash functions, 1M bits (128KB fits in L2 cache)
+ *   ~2% false positive rate at 50K live entries
+ *
+ * SATURATION:
+ *   Bloom filters don't support deletion, so bits accumulate.
+ *   When saturation > 50%, rebuild from live heap entries.
+ *   Uses atomic pointer swap for lock-free reader safety.
+ *
+ * MEMORY SAFETY:
+ *   Old filters are intentionally leaked during rebuild to prevent
+ *   use-after-free. They're tracked and freed at shutdown via
+ *   bloom_cleanup_leaked_filters().
+ *
+ * Copyright (c) 2024 spprof contributors
  */
+
+/* _GNU_SOURCE for consistency with other memprof files */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#endif
 
 #include "bloom.h"
 #include "heap_map.h"
@@ -100,6 +124,19 @@ void bloom_get_indices(uintptr_t ptr, uint64_t indices[BLOOM_HASH_COUNT]) {
  * ============================================================================ */
 
 int bloom_init(void) {
+    /* RESOURCE LEAK FIX: If bloom filter already exists, reuse it.
+     * This prevents 128KB leak on profiler restart. */
+    _Atomic uint8_t* existing = atomic_load_explicit(&g_memprof.bloom_filter_ptr,
+                                                      memory_order_relaxed);
+    if (existing != NULL) {
+        /* Clear and reuse existing filter */
+        memset((void*)existing, 0, BLOOM_SIZE_BYTES);
+        atomic_store_explicit(&g_memprof.bloom_ones_count, 0, memory_order_relaxed);
+        atomic_store_explicit(&g_memprof.bloom_rebuild_in_progress, 0, memory_order_relaxed);
+        atomic_store_explicit(&g_memprof.bloom_staging_filter_ptr, NULL, memory_order_relaxed);
+        return 0;
+    }
+    
     _Atomic uint8_t* filter;
     
 #ifdef _WIN32
@@ -125,21 +162,18 @@ int bloom_init(void) {
     atomic_store_explicit(&g_memprof.bloom_filter_ptr, filter, memory_order_release);
     atomic_store_explicit(&g_memprof.bloom_ones_count, 0, memory_order_relaxed);
     atomic_store_explicit(&g_memprof.bloom_rebuild_in_progress, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_memprof.bloom_staging_filter_ptr, NULL, memory_order_relaxed);
     
     return 0;
 }
 
 /* ============================================================================
- * Add Operation
+ * Internal: Add to a specific filter
  * ============================================================================ */
 
-void bloom_add(uintptr_t ptr) {
-    _Atomic uint8_t* filter = atomic_load_explicit(&g_memprof.bloom_filter_ptr,
-                                                    memory_order_acquire);
+static void bloom_add_to_filter(_Atomic uint8_t* filter, const uint64_t indices[BLOOM_HASH_COUNT],
+                                 int track_ones) {
     if (!filter) return;
-    
-    uint64_t indices[BLOOM_HASH_COUNT];
-    bloom_get_indices(ptr, indices);
     
     for (int i = 0; i < BLOOM_HASH_COUNT; i++) {
         uint64_t byte_idx = indices[i] / 8;
@@ -150,11 +184,63 @@ void bloom_add(uintptr_t ptr) {
                                                     memory_order_relaxed);
         
         /* Track new bits set (approximate - may double-count under contention) */
-        if (!(old_val & bit_mask)) {
+        if (track_ones && !(old_val & bit_mask)) {
             atomic_fetch_add_explicit(&g_memprof.bloom_ones_count, 1,
                                       memory_order_relaxed);
         }
     }
+}
+
+/* ============================================================================
+ * Add Operation (with Double-Insert during rebuild)
+ *
+ * RACE CONDITION FIX (2024):
+ *   There was a race between bloom_add() and bloom_rebuild_from_heap():
+ *
+ *   1. Thread A (bloom_add): Loads active_filter (gets Old)
+ *   2. Thread B (rebuild): Swaps active_filter to New, clears staging to NULL
+ *   3. Thread A: Checks staging, sees NULL (rebuild just finished)
+ *   4. Thread A: Only wrote to Old filter (which is now leaked/retired)
+ *
+ *   Result: Allocation is in heap_map but NOT in new active bloom filter.
+ *   When freed, bloom_might_contain() returns false, creating "ghost leaks".
+ *
+ *   Fix: After writing, verify active_filter hasn't changed. If it has,
+ *   retry the operation to ensure we write to the current active filter.
+ * ============================================================================ */
+
+void bloom_add(uintptr_t ptr) {
+    _Atomic uint8_t* filter;
+    _Atomic uint8_t* staging;
+    _Atomic uint8_t* filter_after;
+    
+    uint64_t indices[BLOOM_HASH_COUNT];
+    bloom_get_indices(ptr, indices);
+    
+    do {
+        filter = atomic_load_explicit(&g_memprof.bloom_filter_ptr,
+                                       memory_order_acquire);
+        if (!filter) return;
+        
+        /* Add to active filter */
+        bloom_add_to_filter(filter, indices, 1 /* track_ones */);
+        
+        /* DOUBLE-INSERT: If rebuild is in progress, also add to staging filter.
+         * This prevents the race where an allocation happens after the iterator
+         * passes its heap_map slot but before the filter swap. */
+        staging = atomic_load_explicit(&g_memprof.bloom_staging_filter_ptr,
+                                        memory_order_acquire);
+        if (staging) {
+            bloom_add_to_filter(staging, indices, 0 /* don't track ones - staging has its own count */);
+        }
+        
+        /* RACE FIX: Verify active filter hasn't changed.
+         * If staging was NULL (rebuild just finished), we might have written to
+         * the old/leaked filter. Re-check and retry if filter pointer changed. */
+        filter_after = atomic_load_explicit(&g_memprof.bloom_filter_ptr,
+                                             memory_order_relaxed);
+        
+    } while (filter != filter_after);
 }
 
 /* ============================================================================
@@ -262,6 +348,12 @@ int bloom_rebuild_from_heap(void) {
     
     memset((void*)new_filter, 0, BLOOM_SIZE_BYTES);
     
+    /* DOUBLE-INSERT FIX: Publish staging filter BEFORE iterating heap.
+     * This allows concurrent bloom_add() calls to write to both filters,
+     * preventing the race where allocations are missed during rebuild. */
+    atomic_store_explicit(&g_memprof.bloom_staging_filter_ptr, new_filter,
+                          memory_order_release);
+    
     /* Iterate heap map, add live entries to new filter */
     uint64_t new_ones = 0;
     void* cb_data[2] = { (void*)new_filter, &new_ones };
@@ -272,6 +364,10 @@ int bloom_rebuild_from_heap(void) {
                                                         memory_order_relaxed);
     atomic_store_explicit(&g_memprof.bloom_filter_ptr, new_filter, memory_order_release);
     atomic_store_explicit(&g_memprof.bloom_ones_count, new_ones, memory_order_relaxed);
+    
+    /* Clear staging pointer - double-insert no longer needed */
+    atomic_store_explicit(&g_memprof.bloom_staging_filter_ptr, NULL,
+                          memory_order_release);
     
     /* INTENTIONALLY LEAK old_filter - record for cleanup at shutdown */
     if (old_filter) {

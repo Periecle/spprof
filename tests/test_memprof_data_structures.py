@@ -10,22 +10,17 @@ Tasks: T047, T048, T049, T050
 """
 
 import platform
-import random
-import statistics
-import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import patch
 
 import pytest
+
 
 # Skip all tests on Windows (experimental support)
 # Use forked mode for test isolation since shutdown() is a one-way operation
 pytestmark = [
     pytest.mark.skipif(
-        platform.system() == "Windows",
-        reason="Memory profiler on Windows is experimental"
+        platform.system() == "Windows", reason="Memory profiler on Windows is experimental"
     ),
     pytest.mark.forked,  # Run in separate process to avoid profiler state leakage
 ]
@@ -34,32 +29,30 @@ pytestmark = [
 @pytest.fixture
 def memprof_cleanup():
     """Ensure memprof is in a clean state before and after tests.
-    
+
     Note: We do NOT call shutdown() because it's a one-way operation
     that prevents reinitialization. The native extension state persists
     across tests, which is fine for testing purposes.
     """
+    import contextlib
+
     import spprof.memprof as memprof
 
     # Only stop if running (don't reset _initialized - native state persists)
     if memprof._running:
-        try:
+        with contextlib.suppress(Exception):
             memprof.stop()
-        except Exception:
-            pass
-    
+
     # Reset running state but keep initialized state in sync with native
     memprof._running = False
-
+    memprof._initialized = memprof._native._memprof_is_initialized()
     yield memprof
 
     # Cleanup after test - only stop, never shutdown
     if memprof._running:
-        try:
+        with contextlib.suppress(Exception):
             memprof.stop()
-        except Exception:
-            pass
-    
+
     memprof._running = False
 
 
@@ -112,16 +105,16 @@ class TestHeapMapConcurrent:
     def test_heap_map_concurrent_access(self, memprof_cleanup):
         """Test heap map with concurrent access from multiple threads."""
         memprof = memprof_cleanup
-        
+
         memprof.start(sampling_rate_kb=64)
 
         errors = []
-        completed = threading.Event()
+        _ = threading.Event()
 
         def allocate_worker(thread_id: int, iterations: int):
             """Worker that allocates and frees memory."""
             try:
-                for i in range(iterations):
+                for _i in range(iterations):
                     # Allocate various sizes
                     sizes = [64, 256, 1024, 4096]
                     data = [bytearray(size) for size in sizes]
@@ -181,8 +174,7 @@ class TestStackTableDeduplication:
             # than total samples for repetitive call sites
             assert stats.unique_stacks >= 1, "Should have at least one unique stack"
 
-        snapshot = memprof.get_snapshot()
-        memprof.stop()
+        _ = memprof.get_snapshot()
 
         # Clean up
         del objects
@@ -280,7 +272,7 @@ class TestPRNGStatistics:
 
     def test_sampling_produces_varied_samples(self, memprof_cleanup):
         """Test that sampling produces non-negative sample counts.
-        
+
         Note: Due to Poisson sampling, results will vary. We just verify
         the profiler runs correctly and produces valid output.
         """
@@ -292,7 +284,7 @@ class TestPRNGStatistics:
         data = [bytearray(4096) for _ in range(100)]
 
         stats = memprof.get_stats()
-        
+
         # Verify stats are valid
         assert stats.total_samples >= 0
         assert stats.live_samples >= 0
@@ -303,7 +295,7 @@ class TestPRNGStatistics:
 
     def test_sampling_rate_affects_sample_count(self, memprof_cleanup):
         """Test that sampling rate configuration is accepted.
-        
+
         Note: Actually comparing sample counts at different rates would
         require running in separate processes since shutdown is one-way.
         Here we just verify the configuration is accepted.
@@ -312,16 +304,16 @@ class TestPRNGStatistics:
 
         # Test with low rate (more samples expected)
         memprof.start(sampling_rate_kb=64)
-        
+
         # Allocate enough to potentially get samples
         data = [bytearray(4096) for _ in range(500)]
 
         stats = memprof.get_stats()
         assert stats.sampling_rate_bytes == 64 * 1024  # 64KB
-        
+
         memprof.stop()
         del data
-        
+
         # Verify we can check stats after stop
         assert stats.total_samples >= 0
         # but due to randomness, we don't make this a strict assertion
@@ -335,11 +327,7 @@ class TestMemProfDataClasses:
         from spprof.memprof import StackFrame
 
         frame = StackFrame(
-            address=0x12345678,
-            function="test_func",
-            file="test.py",
-            line=42,
-            is_python=True
+            address=0x12345678, function="test_func", file="test.py", line=42, is_python=True
         )
 
         assert frame.address == 0x12345678
@@ -364,7 +352,7 @@ class TestMemProfDataClasses:
             stack=[
                 StackFrame(0x1, "func1", "file1.py", 10),
                 StackFrame(0x2, "func2", "file2.py", 20),
-            ]
+            ],
         )
 
         assert sample.address == 0xABCD
@@ -380,7 +368,7 @@ class TestMemProfDataClasses:
             estimated_bytes=524288,
             timestamp_ns=1000,
             lifetime_ns=5000,  # Was live for 5000ns
-            stack=[]
+            stack=[],
         )
 
         assert freed_sample.is_live is False
@@ -394,7 +382,7 @@ class TestMemProfDataClasses:
             shallow_stack_warnings=2,
             total_native_stacks=100,
             avg_native_depth=15.0,
-            min_native_depth=8
+            min_native_depth=8,
         )
 
         assert health.truncation_rate == 0.02
@@ -406,7 +394,7 @@ class TestMemProfDataClasses:
             shallow_stack_warnings=15,
             total_native_stacks=100,
             avg_native_depth=10.0,
-            min_native_depth=3
+            min_native_depth=3,
         )
 
         assert health_med.confidence == "medium"
@@ -418,7 +406,7 @@ class TestMemProfDataClasses:
             shallow_stack_warnings=30,
             total_native_stacks=100,
             avg_native_depth=5.0,
-            min_native_depth=2
+            min_native_depth=2,
         )
 
         assert health_low.confidence == "low"
@@ -428,7 +416,7 @@ class TestMemProfDataClasses:
             shallow_stack_warnings=0,
             total_native_stacks=0,
             avg_native_depth=0.0,
-            min_native_depth=0
+            min_native_depth=0,
         )
 
         assert health_empty.truncation_rate == 0.0
@@ -449,7 +437,7 @@ class TestMemProfDataClasses:
             sampling_rate_bytes=524288,
             shallow_stack_warnings=5,
             death_during_birth=2,
-            zombie_races_detected=0
+            zombie_races_detected=0,
         )
 
         assert stats.total_samples == 1000
@@ -470,19 +458,31 @@ class TestMemProfDataClasses:
         # Create samples from different sites
         samples = [
             AllocationSample(
-                address=0x1, size=1024, weight=524288, estimated_bytes=524288,
-                timestamp_ns=1, lifetime_ns=None,
-                stack=[StackFrame(0x1, "big_alloc", "alloc.py", 10)]
+                address=0x1,
+                size=1024,
+                weight=524288,
+                estimated_bytes=524288,
+                timestamp_ns=1,
+                lifetime_ns=None,
+                stack=[StackFrame(0x1, "big_alloc", "alloc.py", 10)],
             ),
             AllocationSample(
-                address=0x2, size=512, weight=524288, estimated_bytes=524288,
-                timestamp_ns=2, lifetime_ns=None,
-                stack=[StackFrame(0x2, "big_alloc", "alloc.py", 10)]  # Same site
+                address=0x2,
+                size=512,
+                weight=524288,
+                estimated_bytes=524288,
+                timestamp_ns=2,
+                lifetime_ns=None,
+                stack=[StackFrame(0x2, "big_alloc", "alloc.py", 10)],  # Same site
             ),
             AllocationSample(
-                address=0x3, size=256, weight=524288, estimated_bytes=524288,
-                timestamp_ns=3, lifetime_ns=None,
-                stack=[StackFrame(0x3, "small_alloc", "alloc.py", 20)]
+                address=0x3,
+                size=256,
+                weight=524288,
+                estimated_bytes=524288,
+                timestamp_ns=3,
+                lifetime_ns=None,
+                stack=[StackFrame(0x3, "small_alloc", "alloc.py", 20)],
             ),
         ]
 
@@ -494,17 +494,16 @@ class TestMemProfDataClasses:
             live_samples=3,
             estimated_heap_bytes=524288 * 3,
             timestamp_ns=100,
-            frame_pointer_health=health
+            frame_pointer_health=health,
         )
 
         top = snapshot.top_allocators(n=2)
 
         assert len(top) == 2
-        # "big_alloc" should be first (2 samples × 524288)
+        # "big_alloc" should be first (2 samples x 524288)
         assert top[0]["function"] == "big_alloc"
         assert top[0]["sample_count"] == 2
         assert top[0]["estimated_bytes"] == 524288 * 2
 
         assert top[1]["function"] == "small_alloc"
         assert top[1]["sample_count"] == 1
-

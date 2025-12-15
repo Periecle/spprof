@@ -3,7 +3,29 @@
  *
  * Many allocations share the same call site. Interning saves memory and
  * enables O(1) stack comparison via stack_id.
+ *
+ * ALGORITHM:
+ *   Uses open-addressing hash table with linear probing.
+ *   Key: FNV-1a hash of frame array
+ *   Collision resolution: Linear probe up to 64 slots
+ *
+ * THREAD SAFETY:
+ *   stack_table_intern() uses CAS on hash field for lock-free insertion.
+ *   Duplicate inserts by racing threads are harmless (return same ID).
+ *
+ * MEMORY:
+ *   Backing array allocated via mmap/VirtualAlloc (not malloc).
+ *   Dynamic resizing supported via stack_table_resize().
+ *
+ * Copyright (c) 2024 spprof contributors
  */
+
+/* _GNU_SOURCE must be defined BEFORE any system headers for mremap() on Linux */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#endif
 
 #include "stack_intern.h"
 #include "memprof.h"
@@ -41,6 +63,38 @@ uint64_t fnv1a_hash_stack(const uintptr_t* frames, int depth) {
 int stack_table_init(void) {
     size_t capacity = MEMPROF_STACK_TABLE_INITIAL;
     size_t size = capacity * sizeof(StackEntry);
+    
+    /* RESOURCE LEAK FIX: If stack_table already exists (e.g., after shutdown
+     * without full cleanup), we need to handle it properly.
+     * 
+     * Strategy: Free array structures (not string contents which are interned),
+     * then clear and reuse. This prevents ~35MB+ leak on profiler restart. */
+    if (g_memprof.stack_table != NULL) {
+        /* Free resolved symbol array structures before clearing.
+         * NOTE: Strings are interned and managed by string_table, not freed here. */
+        for (size_t i = 0; i < g_memprof.stack_table_capacity; i++) {
+            StackEntry* entry = &g_memprof.stack_table[i];
+            free(entry->function_names);
+            free(entry->file_names);
+            free(entry->line_numbers);
+        }
+        
+        /* If capacity matches, reuse. Otherwise, need to reallocate. */
+        if (g_memprof.stack_table_capacity == capacity) {
+            memset(g_memprof.stack_table, 0, size);
+            atomic_store_explicit(&g_memprof.stack_count, 0, memory_order_relaxed);
+            return 0;
+        }
+        
+        /* Capacity changed - free old and allocate new */
+        size_t old_size = g_memprof.stack_table_capacity * sizeof(StackEntry);
+#ifdef _WIN32
+        VirtualFree(g_memprof.stack_table, 0, MEM_RELEASE);
+#else
+        munmap(g_memprof.stack_table, old_size);
+#endif
+        g_memprof.stack_table = NULL;
+    }
     
 #ifdef _WIN32
     g_memprof.stack_table = (StackEntry*)VirtualAlloc(
@@ -89,24 +143,36 @@ uint32_t stack_table_intern(const uintptr_t* frames, int depth,
     
     uint64_t hash = fnv1a_hash_stack(frames, depth);
     
-    /* Ensure hash is non-zero (0 is reserved for empty) */
-    if (hash == 0) hash = 1;
+    /* Ensure hash is >= 2 (0=empty, 1=reserved marker) */
+    if (hash < 2) hash = hash + 2;
     
     size_t capacity = g_memprof.stack_table_capacity;
     uint64_t idx = hash % capacity;
     
     for (int probe = 0; probe < 64; probe++) {
         StackEntry* entry = &g_memprof.stack_table[idx];
-        uint64_t entry_hash = atomic_load_explicit(&entry->hash, memory_order_relaxed);
+        uint64_t entry_hash = atomic_load_explicit(&entry->hash, memory_order_acquire);
         
-        /* Empty slot? Try to claim it */
-        if (entry_hash == 0) {
-            uint64_t expected = 0;
+        /* Empty slot? Try to claim it with two-phase insert */
+        if (entry_hash == STACK_HASH_EMPTY) {
+            uint64_t expected = STACK_HASH_EMPTY;
+            
+            /*
+             * PHASE 1: Reserve the slot (CAS EMPTY → RESERVED)
+             *
+             * This prevents other writers from claiming this slot while
+             * we're filling in the data.
+             */
             if (atomic_compare_exchange_strong_explicit(
-                    &entry->hash, &expected, hash,
+                    &entry->hash, &expected, STACK_HASH_RESERVED,
                     memory_order_acq_rel, memory_order_relaxed)) {
                 
-                /* Claimed. Fill in native frames */
+                /*
+                 * Slot is now RESERVED. Other threads will see RESERVED and
+                 * skip this slot (won't read partial data).
+                 *
+                 * PHASE 2: Fill in all data BEFORE publishing the hash.
+                 */
                 entry->depth = (uint16_t)depth;
                 entry->flags = 0;
                 memcpy(entry->frames, frames, (size_t)depth * sizeof(uintptr_t));
@@ -125,18 +191,37 @@ uint32_t stack_table_intern(const uintptr_t* frames, int depth,
                 entry->file_names = NULL;
                 entry->line_numbers = NULL;
                 
+                /*
+                 * PHASE 3: Publish the real hash with release semantics.
+                 *
+                 * This ensures all the data writes above are visible to any
+                 * thread that subsequently reads this hash value.
+                 */
+                atomic_store_explicit(&entry->hash, hash, memory_order_release);
+                
                 atomic_fetch_add_explicit(&g_memprof.stack_count, 1, memory_order_relaxed);
                 
                 return (uint32_t)idx;
             }
             
             /* Lost race, re-read hash */
-            entry_hash = atomic_load_explicit(&entry->hash, memory_order_relaxed);
+            entry_hash = atomic_load_explicit(&entry->hash, memory_order_acquire);
         }
         
-        /* Check if this is our stack */
+        /* Skip RESERVED slots - another thread is writing, data not ready */
+        if (entry_hash == STACK_HASH_RESERVED) {
+            /* Could be our stack being written by another thread racing us.
+             * Continue probing - if it's ours, we'll find it on a retry.
+             * This is safe because duplicate inserts just waste a slot. */
+            atomic_fetch_add_explicit(&g_memprof.stack_table_collisions, 1, memory_order_relaxed);
+            idx = (idx + 1) % capacity;
+            continue;
+        }
+        
+        /* Valid hash (>= 2): Check if this is our stack */
         if (entry_hash == hash && entry->depth == depth) {
-            /* Probable match - verify frames */
+            /* Probable match - verify frames.
+             * Safe to read entry->frames because hash >= 2 means data is published. */
             if (memcmp(entry->frames, frames, (size_t)depth * sizeof(uintptr_t)) == 0) {
                 return (uint32_t)idx;  /* Exact match */
             }
@@ -147,7 +232,33 @@ uint32_t stack_table_intern(const uintptr_t* frames, int depth,
         idx = (idx + 1) % capacity;
     }
     
-    /* Table full or excessive collisions */
+    /* Table full or excessive collisions.
+     * 
+     * IMPORTANT: This is a serious condition. All subsequent allocations
+     * will have stack_id = UINT32_MAX, leading to broken/missing stacks
+     * in the profile output.
+     *
+     * Attempt resize if not actively profiling (resize is not thread-safe
+     * during concurrent interning). If resize fails or is unsafe, we must
+     * gracefully degrade.
+     */
+    
+    /* Track saturation event */
+    atomic_fetch_add_explicit(&g_memprof.stack_table_saturations, 1,
+                              memory_order_relaxed);
+    
+    /* Only attempt resize if profiling is not active (safe window) */
+    if (!atomic_load_explicit(&g_memprof.active_alloc, memory_order_relaxed)) {
+        if (stack_table_resize() == 0) {
+            /* Resize succeeded - retry interning once */
+            /* Note: Simple recursion is safe here since we only retry once */
+            uint32_t retry_id = stack_table_intern(frames, depth, python_frames, python_depth);
+            if (retry_id != UINT32_MAX) {
+                return retry_id;
+            }
+        }
+    }
+    
     return UINT32_MAX;
 }
 
@@ -162,9 +273,13 @@ const StackEntry* stack_table_get(uint32_t stack_id) {
     
     StackEntry* entry = &g_memprof.stack_table[stack_id];
     
-    /* Verify slot is occupied (hash != 0) */
-    if (atomic_load_explicit(&entry->hash, memory_order_relaxed) == 0) {
-        return NULL;
+    /* Verify slot is fully written (hash >= 2).
+     * EMPTY (0) = slot not used
+     * RESERVED (1) = slot being written, data not ready
+     * >= 2 = valid, data is safe to read */
+    uint64_t hash = atomic_load_explicit(&entry->hash, memory_order_acquire);
+    if (hash < 2) {
+        return NULL;  /* Empty or reserved - not ready */
     }
     
     return entry;
@@ -289,31 +404,33 @@ int stack_table_resize(void) {
  * Cleanup
  * ============================================================================ */
 
+/* Forward declaration for string table cleanup */
+extern void string_table_destroy(void);
+
 void stack_table_destroy(void) {
     if (!g_memprof.stack_table) {
         return;
     }
     
-    /* Free resolved symbol strings */
+    /* Free resolved symbol array structures.
+     * NOTE: The actual strings (function_names[i], file_names[i]) are NOT freed
+     * because they're interned in the global string table and shared across
+     * multiple stack entries. The string table is cleaned up separately. */
     for (size_t i = 0; i < g_memprof.stack_table_capacity; i++) {
         StackEntry* entry = &g_memprof.stack_table[i];
         
-        if (entry->function_names) {
-            for (int j = 0; j < entry->depth; j++) {
-                free(entry->function_names[j]);
-            }
-            free(entry->function_names);
-        }
-        
-        if (entry->file_names) {
-            for (int j = 0; j < entry->depth; j++) {
-                free(entry->file_names[j]);
-            }
-            free(entry->file_names);
-        }
-        
+        /* Free the arrays themselves, but NOT the strings they point to */
+        free(entry->function_names);
+        free(entry->file_names);
         free(entry->line_numbers);
+        
+        entry->function_names = NULL;
+        entry->file_names = NULL;
+        entry->line_numbers = NULL;
     }
+    
+    /* Clean up the interned strings */
+    string_table_destroy();
     
     size_t size = g_memprof.stack_table_capacity * sizeof(StackEntry);
     

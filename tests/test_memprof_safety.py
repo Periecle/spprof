@@ -9,7 +9,6 @@ Tests cover:
 Tasks: T107, T110, T111, T112
 """
 
-import gc
 import multiprocessing
 import os
 import platform
@@ -20,12 +19,12 @@ import time
 
 import pytest
 
+
 # Skip all tests on Windows (experimental support)
 # Use forked mode for test isolation since shutdown() is a one-way operation
 pytestmark = [
     pytest.mark.skipif(
-        platform.system() == "Windows",
-        reason="Memory profiler on Windows is experimental"
+        platform.system() == "Windows", reason="Memory profiler on Windows is experimental"
     ),
     pytest.mark.forked,  # Run in separate process to avoid profiler state leakage
 ]
@@ -34,42 +33,37 @@ pytestmark = [
 @pytest.fixture
 def memprof_cleanup():
     """Ensure memprof is in a clean state before and after tests.
-    
+
     Note: We do NOT call shutdown() because it's a one-way operation
     that prevents reinitialization. The native extension state persists
     across tests, which is fine for testing purposes.
     """
+    import contextlib
+
     import spprof.memprof as memprof
 
     # Only stop if running (don't reset _initialized - native state persists)
     if memprof._running:
-        try:
+        with contextlib.suppress(Exception):
             memprof.stop()
-        except Exception:
-            pass
-    
+
     # Reset running state but keep initialized state in sync with native
     memprof._running = False
-
+    memprof._initialized = memprof._native._memprof_is_initialized()
     yield memprof
 
     # Cleanup after test - only stop, never shutdown
     if memprof._running:
-        try:
+        with contextlib.suppress(Exception):
             memprof.stop()
-        except Exception:
-            pass
-    
+
     memprof._running = False
 
 
 class TestForkSafety:
     """T107: Test fork safety with multiprocessing."""
 
-    @pytest.mark.skipif(
-        platform.system() == "Windows",
-        reason="Fork not available on Windows"
-    )
+    @pytest.mark.skipif(platform.system() == "Windows", reason="Fork not available on Windows")
     def test_fork_during_profiling_no_crash(self, memprof_cleanup):
         """Test that forking while profiling doesn't crash."""
         memprof = memprof_cleanup
@@ -92,9 +86,9 @@ class TestForkSafety:
                 return 1
 
         # Use 'fork' start method on platforms that support it
-        if hasattr(multiprocessing, 'get_context'):
+        if hasattr(multiprocessing, "get_context"):
             try:
-                ctx = multiprocessing.get_context('fork')
+                ctx = multiprocessing.get_context("fork")
                 p = ctx.Process(target=child_process)
             except ValueError:
                 # 'fork' not available, skip test
@@ -120,10 +114,7 @@ class TestForkSafety:
 
         del parent_data
 
-    @pytest.mark.skipif(
-        platform.system() == "Windows",
-        reason="os.fork not available on Windows"
-    )
+    @pytest.mark.skipif(platform.system() == "Windows", reason="os.fork not available on Windows")
     def test_fork_raw_no_crash(self, memprof_cleanup):
         """Test raw fork() during profiling."""
         memprof = memprof_cleanup
@@ -138,7 +129,7 @@ class TestForkSafety:
             # Child process
             try:
                 # Try to allocate in child
-                child_data = bytearray(4096)
+                _ = bytearray(4096)
                 # Exit cleanly
                 os._exit(0)
             except Exception:
@@ -179,7 +170,7 @@ class TestReentrantSafety:
 
         # Getting snapshot/stats also allocates memory
         for _ in range(10):
-            snapshot = memprof.get_snapshot()
+            _ = memprof.get_snapshot()
             stats = memprof.get_stats()
 
         # If we get here, re-entrancy is working
@@ -233,9 +224,11 @@ class TestHeapMapOverflow:
                 # Check stats periodically
                 if i % 10000 == 9999:
                     stats = memprof.get_stats()
-                    print(f"After {i+1} allocs: "
-                          f"samples={stats.total_samples}, "
-                          f"load={stats.heap_map_load_percent:.2f}%")
+                    print(
+                        f"After {i + 1} allocs: "
+                        f"samples={stats.total_samples}, "
+                        f"load={stats.heap_map_load_percent:.2f}%"
+                    )
 
             final_stats = memprof.get_stats()
 
@@ -322,10 +315,7 @@ class TestStackTableOverflow:
 class TestSignalSafety:
     """Test signal safety of the profiler."""
 
-    @pytest.mark.skipif(
-        platform.system() == "Windows",
-        reason="Signal handling differs on Windows"
-    )
+    @pytest.mark.skipif(platform.system() == "Windows", reason="Signal handling differs on Windows")
     def test_handles_signals_during_profiling(self, memprof_cleanup):
         """Test that profiler handles signals gracefully."""
         memprof = memprof_cleanup
@@ -420,4 +410,3 @@ class TestCleanShutdown:
 # Mark slow tests
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: marks tests as slow")
-

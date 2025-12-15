@@ -249,21 +249,22 @@ class TestEdgeCases:
 @pytest.fixture
 def memprof_cleanup():
     """Ensure memprof is in a clean state before and after tests.
-    
+
     Note: We do NOT call shutdown() because it's a one-way operation
     that permanently disables the profiler. The native extension maintains
     its own state which persists across Python module state changes.
     """
+    import contextlib
+
     import spprof.memprof as memprof
 
     # Stop if running - use try/except since state may be inconsistent
     if memprof._running:
-        try:
+        with contextlib.suppress(RuntimeError):
             memprof.stop()
-        except RuntimeError:
-            # Already stopped at native level
-            memprof._running = False
-    
+        # Already stopped at native level
+        memprof._running = False
+
     # If we've shut down, tests can't run - skip
     if memprof._shutdown:
         pytest.skip("Memory profiler was shutdown in a previous test")
@@ -272,10 +273,8 @@ def memprof_cleanup():
 
     # Cleanup after test - only stop, never shutdown
     if memprof._running:
-        try:
+        with contextlib.suppress(RuntimeError):
             memprof.stop()
-        except RuntimeError:
-            pass
         memprof._running = False
 
 
@@ -313,7 +312,7 @@ class TestDarwinMallocLogger:
         # Allocate memory that should be captured
         large_allocations = [bytearray(4096) for _ in range(100)]
 
-        snapshot = memprof.get_snapshot()
+        _ = memprof.get_snapshot()
         stats = memprof.get_stats()
 
         # Should have captured some samples
@@ -335,6 +334,7 @@ class TestDarwinMallocLogger:
             del data
 
         import gc
+
         gc.collect()
 
         stats = memprof.get_stats()
@@ -373,8 +373,8 @@ class TestDarwinMallocLogger:
 
     def test_malloc_logger_multithread_safety(self, memprof_cleanup):
         """Test malloc_logger is thread-safe."""
-        import threading
         import gc
+        import threading
 
         memprof = memprof_cleanup
 
@@ -411,7 +411,7 @@ class TestDarwinMallocLogger:
         assert stats.total_samples >= 0
 
         memprof.stop()
-        
+
         # Force cleanup of thread state
         gc.collect()
         time.sleep(0.01)
@@ -427,7 +427,7 @@ class TestDarwinMallocLogger:
         # Mixed workload
         result = 0
         for i in range(10000):
-            result += i ** 2
+            result += i**2
             if i % 100 == 0:
                 data = bytearray(1024)
                 del data
@@ -444,13 +444,13 @@ class TestDarwinMallocLogger:
 
     def test_malloc_logger_rapid_start_stop(self, memprof_cleanup):
         """Test rapid start/stop doesn't cause issues.
-        
+
         Note: We only test start/stop cycles without shutdown since
         shutdown is a one-way operation that can't be undone.
         """
         memprof = memprof_cleanup
 
-        for i in range(10):
+        for _i in range(10):
             memprof.start(sampling_rate_kb=512)
 
             data = bytearray(4096)

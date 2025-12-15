@@ -2,7 +2,29 @@
  * sampling.c - Poisson sampling engine
  *
  * Implements Poisson sampling with exponential inter-sample intervals.
+ *
+ * MATHEMATICAL BASIS:
+ *   Poisson process with rate λ = 1/mean_bytes.
+ *   Inter-arrival times are exponentially distributed: X = -ln(U) * mean
+ *   where U ~ Uniform(0,1).
+ *
+ * THREAD SAFETY:
+ *   Uses thread-local storage (TLS) for per-thread state.
+ *   Global state accessed via atomics only.
+ *
+ * ASYNC-SIGNAL-SAFETY:
+ *   sampling_should_sample() is async-signal-safe (simple arithmetic).
+ *   sampling_handle_sample() is NOT async-signal-safe (calls malloc internals).
+ *
+ * Copyright (c) 2024 spprof contributors
  */
+
+/* _GNU_SOURCE for pthread_atfork and nanosleep on Linux */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#endif
 
 #include "sampling.h"
 #include "heap_map.h"
@@ -18,10 +40,13 @@
 #include <windows.h>
 #include <process.h>
 #define getpid _getpid
+/* Windows doesn't have pid_t - use DWORD (which GetCurrentProcessId returns) */
+typedef DWORD memprof_pid_t;
 #else
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+typedef pid_t memprof_pid_t;
 #endif
 
 /* ============================================================================
@@ -39,7 +64,7 @@ static uint64_t g_global_seed = 0;
 static _Atomic int g_seed_initialized = 0;
 
 /* Process ID at init time (for fork detection) */
-static pid_t g_init_pid = 0;
+static memprof_pid_t g_init_pid = 0;
 
 /* ============================================================================
  * Global Seed Initialization
@@ -215,16 +240,17 @@ void sampling_handle_sample(void* ptr, size_t size) {
             capture.python_code_ptrs, capture.python_depth);
     }
     
-    /* Calculate weight (= sampling rate) */
-    uint32_t weight = (uint32_t)g_memprof.sampling_rate;
+    /* Calculate weight (= sampling rate) 
+     * Weight is now 32-bit, so clamp to UINT32_MAX for very high sampling rates */
+    uint32_t weight = (g_memprof.sampling_rate > UINT32_MAX) ? 
+                       UINT32_MAX : (uint32_t)g_memprof.sampling_rate;
     if (weight == 0) weight = MEMPROF_DEFAULT_SAMPLING_RATE;
     
-    /* Clamp size */
-    uint32_t size32 = (size > MAX_ALLOC_SIZE) ? MAX_ALLOC_SIZE : (uint32_t)size;
+    /* No size clamping needed - full 64-bit size stored */
     
     /* Phase 2: Finalize heap map entry */
     int success = heap_map_finalize(slot_idx, (uintptr_t)ptr, stack_id,
-                                     size32, weight, birth_seq, timestamp);
+                                     size, weight, birth_seq, timestamp);
     
     if (success) {
         /* Add to Bloom filter */
@@ -265,8 +291,8 @@ void sampling_handle_free(void* ptr) {
     uint64_t free_timestamp = memprof_get_monotonic_ns();
     
     /* Look up and remove from heap map */
-    uint32_t stack_id, size, weight;
-    uint64_t duration;
+    uint32_t stack_id, weight;
+    uint64_t size, duration;
     
     heap_map_remove((uintptr_t)ptr, free_seq, free_timestamp,
                     &stack_id, &size, &weight, &duration);
@@ -320,9 +346,9 @@ int sampling_register_fork_handlers(void) {
 
 int sampling_in_forked_child(void) {
     if (UNLIKELY(g_init_pid == 0)) {
-        g_init_pid = getpid();
+        g_init_pid = (memprof_pid_t)getpid();
         return 0;
     }
-    return getpid() != g_init_pid;
+    return (memprof_pid_t)getpid() != g_init_pid;
 }
 

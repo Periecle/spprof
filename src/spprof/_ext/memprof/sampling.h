@@ -5,22 +5,39 @@
  * The key insight is that sampling probability is proportional to allocation
  * size, making large allocations more likely to be captured.
  *
- * Hot path (99.99% of calls):
+ * HOT PATH (99.99% of calls):
  *   - TLS access (~1-2 cycles)
  *   - Single subtract (1 cycle)
  *   - Single compare + branch (1 cycle)
  *   - Total: ~5-10 cycles
  *
- * Cold path (sampling):
+ * COLD PATH (sampling):
  *   - Stack capture (~50-100 cycles)
  *   - Hash + intern (~50 cycles)
  *   - Heap map insert (~50 cycles)
  *   - PRNG + threshold (~10 cycles)
  *   - Total: ~500-2000 cycles
+ *
+ * THREAD SAFETY:
+ *   Uses thread-local storage (TLS) - each thread has independent state.
+ *   Global state accessed via atomics only.
+ *
+ * FORK SAFETY:
+ *   Registers pthread_atfork handlers to disable profiler in child.
+ *   Child must explicitly restart profiling if desired.
+ *
+ * Copyright (c) 2024 spprof contributors
  */
 
 #ifndef SPPROF_SAMPLING_H
 #define SPPROF_SAMPLING_H
+
+/* _GNU_SOURCE for pthread_atfork on Linux */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#endif
 
 #include "memprof.h"
 #include <stdint.h>

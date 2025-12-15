@@ -200,9 +200,14 @@ static void handle_free(void* ptr) {
  *
  * For now, we provide stub functions that the Python extension can call.
  * Full native tracking requires the separate libspprof_alloc.so library.
+ *
+ * IMPORTANT: Unlike macOS (which has malloc_logger), Linux requires
+ * LD_PRELOAD for native allocation tracking. Without it, the memory
+ * profiler only tracks Python allocations via PyMem hooks.
  */
 
 static int g_linux_hooks_installed = 0;
+static int g_linux_warning_emitted = 0;
 
 int memprof_linux_install(void) {
     ensure_initialized();
@@ -213,7 +218,25 @@ int memprof_linux_install(void) {
     
     g_linux_hooks_installed = 1;
     
-    /* TODO: Optionally install PyMem hooks here for Python-only tracking */
+    /* Emit a one-time warning about limited functionality on Linux.
+     * This helps users understand why they might not see native allocations. */
+    if (!g_linux_warning_emitted) {
+        g_linux_warning_emitted = 1;
+        
+        /* Only emit warning if SPPROF_QUIET is not set */
+        const char* quiet = getenv("SPPROF_QUIET");
+        if (!quiet || quiet[0] == '0') {
+            const char msg[] =
+                "[spprof] Memory profiler on Linux: Native malloc tracking requires LD_PRELOAD.\n"
+                "         Python allocations are tracked. For full native tracking, run:\n"
+                "         LD_PRELOAD=libspprof_alloc.so python your_script.py\n"
+                "         Set SPPROF_QUIET=1 to suppress this message.\n";
+            ssize_t r = write(STDERR_FILENO, msg, sizeof(msg) - 1);
+            (void)r;  /* Suppress unused result warning */
+        }
+    }
+    
+    /* TODO: Implement PyMem_SetAllocator hooks for Python-only tracking */
     
     return 0;
 }

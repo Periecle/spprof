@@ -10,20 +10,17 @@ Tasks: T051, T068, T069
 import gc
 import platform
 import random
-import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List
 
 import pytest
+
 
 # Skip all tests on Windows (experimental support)
 # Use forked mode for test isolation since shutdown() is a one-way operation
 pytestmark = [
     pytest.mark.skipif(
-        platform.system() == "Windows",
-        reason="Memory profiler on Windows is experimental"
+        platform.system() == "Windows", reason="Memory profiler on Windows is experimental"
     ),
     pytest.mark.forked,  # Run in separate process to avoid profiler state leakage
 ]
@@ -32,34 +29,31 @@ pytestmark = [
 @pytest.fixture
 def memprof_cleanup():
     """Ensure memprof is in a clean state before and after tests.
-    
+
     Note: We do NOT call shutdown() because it's a one-way operation
     that prevents reinitialization. The native extension state persists
     across tests, which is fine for testing purposes.
     """
+    import contextlib
+
     import spprof.memprof as memprof
 
     # Only stop if running (don't reset _initialized - native state persists)
     if memprof._running:
-        try:
+        with contextlib.suppress(Exception):
             memprof.stop()
-        except Exception:
-            pass
-    
+
     # Reset running state but keep initialized state in sync with native
     memprof._running = False
-
+    memprof._initialized = memprof._native._memprof_is_initialized()
     yield memprof
 
     # Cleanup after test - only stop, never shutdown
     if memprof._running:
-        try:
+        with contextlib.suppress(Exception):
             memprof.stop()
-        except Exception:
-            pass
-    
-    memprof._running = False
 
+    memprof._running = False
 
 class TestHeapMapStress:
     """T051: Concurrent stress test for heap map (10 threads, 1M ops)."""
@@ -74,23 +68,23 @@ class TestHeapMapStress:
         - Stats remain consistent
         """
         memprof = memprof_cleanup
-        
+
         memprof.start(sampling_rate_kb=512)
 
         num_threads = 10
         ops_per_thread = 100_000  # Total ~1M ops
 
-        errors: List[str] = []
+        errors: list[str] = []
         completed_ops = [0] * num_threads
-        thread_samples = [0] * num_threads
+        _ = [0] * num_threads
 
         def worker(thread_id: int):
             """Worker that performs random alloc/free operations."""
-            local_objects: List[bytearray] = []
+            local_objects: list[bytearray] = []
             ops = 0
 
             try:
-                for i in range(ops_per_thread):
+                for _i in range(ops_per_thread):
                     # Random operation: allocate or free
                     if random.random() < 0.6 or len(local_objects) == 0:
                         # Allocate with random size
@@ -148,7 +142,7 @@ class TestHeapMapStress:
 
         memprof.stop()
 
-        print(f"\nStress test completed:")
+        print("\nStress test completed:")
         print(f"  Threads: {num_threads}")
         print(f"  Total ops: {total_ops:,}")
         print(f"  Elapsed: {elapsed:.2f}s")
@@ -198,12 +192,12 @@ class TestHighAllocationRate:
 
         memprof.stop()
 
-        print(f"\nHigh allocation rate test:")
+        print("\nHigh allocation rate test:")
         print(f"  Allocations: {alloc_count:,}")
         print(f"  Duration: {elapsed:.2f}s")
         print(f"  Rate: {rate:,.0f} allocs/sec")
         print(f"  Samples: {stats.total_samples}")
-        print(f"  Sampling rate: ~1 per {512*1024/64:.0f} allocs")
+        print(f"  Sampling rate: ~1 per {512 * 1024 / 64:.0f} allocs")
 
         # Should complete without errors
         assert alloc_count > 0
@@ -227,14 +221,14 @@ class TestConcurrentAllocation:
 
         num_threads = 10
         allocs_per_thread = 10_000
-        errors: List[str] = []
-        thread_data: List[List[bytearray]] = [[] for _ in range(num_threads)]
+        errors: list[str] = []
+        thread_data: list[list[bytearray]] = [[] for _ in range(num_threads)]
 
         def allocate_worker(thread_id: int):
             """Worker that allocates objects and keeps them alive."""
             try:
                 local_list = []
-                for i in range(allocs_per_thread):
+                for _i in range(allocs_per_thread):
                     # Varying allocation sizes
                     size = 64 * (1 + (i % 16))  # 64 to 1024 bytes
                     obj = bytearray(size)
@@ -266,7 +260,7 @@ class TestConcurrentAllocation:
         assert not errors, f"Errors: {errors}"
 
         # Get snapshot while data is still alive
-        snapshot = memprof.get_snapshot()
+        _ = memprof.get_snapshot()
         stats = memprof.get_stats()
 
         # Verify profiler tracked activity
@@ -281,7 +275,7 @@ class TestConcurrentAllocation:
 
         memprof.stop()
 
-        print(f"\nConcurrent allocation test:")
+        print("\nConcurrent allocation test:")
         print(f"  Threads: {num_threads}")
         print(f"  Allocations per thread: {allocs_per_thread:,}")
         print(f"  Total samples: {stats.total_samples}")
@@ -294,8 +288,8 @@ class TestConcurrentAllocation:
 
         memprof.start(sampling_rate_kb=512)
 
-        errors: List[str] = []
-        snapshots: List[object] = []
+        errors: list[str] = []
+        snapshots: list[object] = []
 
         def snapshot_worker(worker_id: int, count: int):
             """Worker that takes snapshots."""
@@ -310,7 +304,7 @@ class TestConcurrentAllocation:
         def allocate_worker(worker_id: int, count: int):
             """Worker that allocates memory."""
             try:
-                for i in range(count):
+                for _i in range(count):
                     data = bytearray(1024)
                     time.sleep(0.005)
                     del data
@@ -340,8 +334,8 @@ class TestConcurrentAllocation:
         # All snapshots should be valid
         for snapshot in snapshots:
             assert snapshot is not None
-            assert hasattr(snapshot, 'live_samples')
-            assert hasattr(snapshot, 'estimated_heap_bytes')
+            assert hasattr(snapshot, "live_samples")
+            assert hasattr(snapshot, "estimated_heap_bytes")
 
         memprof.stop()
 
@@ -404,5 +398,6 @@ class TestMemoryPressure:
 
 # Mark slow tests
 def pytest_configure(config):
-    config.addinivalue_line("markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')")
-
+    config.addinivalue_line(
+        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
+    )

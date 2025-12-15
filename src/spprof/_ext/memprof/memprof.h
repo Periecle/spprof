@@ -3,10 +3,44 @@
  *
  * Core types, constants, and global state for the memory profiler.
  * This header is the main entry point for the memprof subsystem.
+ *
+ * ARCHITECTURE:
+ *   The memory profiler uses Poisson sampling to capture allocation stacks
+ *   with controlled overhead. Key components:
+ *
+ *   - Sampling Engine (sampling.h/c): Per-thread TLS state with exponential
+ *     inter-sample intervals. Hot path is ~5 cycles.
+ *
+ *   - Heap Map (heap_map.h/c): Lock-free hash table tracking sampled
+ *     allocations. Uses two-phase insert for race safety.
+ *
+ *   - Stack Intern (stack_intern.h/c): Deduplicates call stacks into 32-bit
+ *     IDs for compact storage.
+ *
+ *   - Bloom Filter (bloom.h/c): Optimizes free() path - 99.99% of frees
+ *     are non-sampled and skip the heap map lookup.
+ *
+ * THREAD SAFETY:
+ *   All data structures use lock-free algorithms with atomic operations.
+ *   No mutexes are used in hot paths.
+ *
+ * PLATFORM SUPPORT:
+ *   - Linux: glibc malloc hooks or LD_PRELOAD interposition
+ *   - macOS: malloc_zone logging hooks
+ *   - Windows: Heap API hooks (experimental)
+ *
+ * Copyright (c) 2024 spprof contributors
  */
 
 #ifndef SPPROF_MEMPROF_H
 #define SPPROF_MEMPROF_H
+
+/* _GNU_SOURCE for Linux-specific features (mremap, pthread_atfork, dladdr) */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#endif
 
 #include <stdint.h>
 #include <stddef.h>
@@ -23,9 +57,20 @@
 #define MEMPROF_HEAP_MAP_CAPACITY (1 << 20)  /* 1M entries, ~24MB */
 #define MEMPROF_HEAP_MAP_MASK (MEMPROF_HEAP_MAP_CAPACITY - 1)
 
-/* Stack intern table - dynamic sizing */
-#define MEMPROF_STACK_TABLE_INITIAL  (1 << 12)   /* 4K entries (~2MB) */
-#define MEMPROF_STACK_TABLE_MAX_DEFAULT (1 << 16) /* 64K entries (~35MB) */
+/* Stack intern table - dynamic sizing
+ * 
+ * DESIGN NOTE: Larger initial capacity reduces resize frequency.
+ * Each StackEntry is ~544 bytes, so:
+ *   - 16K entries = ~8.5MB
+ *   - 64K entries = ~35MB
+ *   - 128K entries = ~70MB
+ *
+ * Production apps can easily hit 64K unique stacks, so we default
+ * to 64K initial to avoid resize during profiling (resize is NOT
+ * fully thread-safe without RCU).
+ */
+#define MEMPROF_STACK_TABLE_INITIAL  (1 << 16)   /* 64K entries (~35MB) */
+#define MEMPROF_STACK_TABLE_MAX_DEFAULT (1 << 18) /* 256K entries (~140MB) */
 #define MEMPROF_STACK_TABLE_GROW_THRESHOLD 75    /* Grow at 75% load */
 
 /* Probe limit for open-addressing */
@@ -40,23 +85,31 @@
 #define BLOOM_HASH_COUNT 4
 
 /* ============================================================================
- * Packed Metadata Macros (24 bytes per HeapMapEntry)
+ * HeapMapEntry Field Limits
  * ============================================================================ */
 
-/* Format: stack_id (20 bits) | size (24 bits) | weight (20 bits) = 64 bits */
-#define METADATA_PACK(stack_id, size, weight) \
-    ((((uint64_t)(stack_id) & 0xFFFFF) << 44) | \
-     (((uint64_t)(size) & 0xFFFFFF) << 20) | \
-     ((uint64_t)(weight) & 0xFFFFF))
+/*
+ * DESIGN NOTE (2024): We previously packed stack_id, size, and weight into
+ * a single 64-bit metadata field. This caused the "16MB Lie" problem where
+ * large allocations (common in ML workloads) were misreported.
+ *
+ * New design: Store fields separately with full precision.
+ * - stack_id: 32 bits (matches stack table index type)
+ * - size: 64 bits (no limit - can track any allocation)
+ * - weight: 32 bits (supports sampling rates up to 4GB)
+ *
+ * HeapMapEntry is now 48 bytes (was 32), trading ~50% more memory for
+ * accurate profiling of large allocations.
+ */
 
-#define METADATA_STACK_ID(m) (((m) >> 44) & 0xFFFFF)
-#define METADATA_SIZE(m)     (((m) >> 20) & 0xFFFFFF)
-#define METADATA_WEIGHT(m)   ((m) & 0xFFFFF)
+/* Maximum stack_id is bounded by stack table capacity */
+#define MAX_STACK_ID   UINT32_MAX
 
-/* Maximum values due to bit packing */
-#define MAX_STACK_ID   ((1 << 20) - 1)  /* ~1M unique stacks */
-#define MAX_ALLOC_SIZE ((1 << 24) - 1)  /* 16MB (larger sizes clamped) */
-#define MAX_WEIGHT     ((1 << 20) - 1)  /* ~1M (sufficient for 1TB sampling) */
+/* No artificial limit on allocation size */
+#define MAX_ALLOC_SIZE UINT64_MAX
+
+/* Weight limit - 32 bits supports sampling rates up to 4GB */
+#define MAX_WEIGHT     UINT32_MAX
 
 /* ============================================================================
  * Heap Map Entry State Machine
@@ -77,12 +130,14 @@ struct MemProfGlobalState;
 struct MixedStackCapture;
 
 /* ============================================================================
- * HeapMapEntry - Single entry in the live heap map (24 bytes)
+ * HeapMapEntry - Single entry in the live heap map (48 bytes)
  * ============================================================================ */
 
 typedef struct HeapMapEntry {
     _Atomic uintptr_t ptr;        /* Key: allocated pointer (state encoded) */
-    _Atomic uint64_t  metadata;   /* Packed: stack_id | size | weight */
+    _Atomic uint32_t  stack_id;   /* Interned stack trace ID */
+    _Atomic uint32_t  weight;     /* Sampling weight (= sampling_rate) */
+    _Atomic uint64_t  size;       /* Allocation size in bytes (full 64-bit) */
     _Atomic uint64_t  birth_seq;  /* Sequence number at allocation time */
     uint64_t          timestamp;  /* Wall clock time (nanoseconds) */
 } HeapMapEntry;
@@ -95,8 +150,16 @@ typedef struct HeapMapEntry {
 #define STACK_FLAG_PYTHON_ATTR     0x0002
 #define STACK_FLAG_TRUNCATED       0x0004
 
+/* Stack hash state markers:
+ *   0 = empty slot (available)
+ *   1 = reserved (being written by a thread, do not read data yet)
+ *   >= 2 = valid hash (data is fully written and readable)
+ */
+#define STACK_HASH_EMPTY           0ULL
+#define STACK_HASH_RESERVED        1ULL
+
 typedef struct StackEntry {
-    _Atomic uint64_t hash;        /* FNV-1a hash for lookup; 0 = empty */
+    _Atomic uint64_t hash;        /* FNV-1a hash for lookup; 0=empty, 1=reserved, >=2=valid */
     uint16_t depth;               /* Number of valid native frames */
     uint16_t flags;               /* RESOLVED, PYTHON_ATTRIBUTED, etc. */
     uintptr_t frames[MEMPROF_MAX_STACK_DEPTH];  /* Raw return addresses */
@@ -158,10 +221,15 @@ typedef struct MemProfGlobalState {
     _Atomic uint32_t stack_count; /* Number of unique stacks */
     size_t stack_table_capacity;  /* Current stack table capacity */
     
-    /* Bloom filter (swappable for rebuild) */
-    _Atomic(_Atomic uint8_t*) bloom_filter_ptr;  /* Current active filter */
-    _Atomic uint64_t bloom_ones_count;           /* Approximate bits set */
-    _Atomic int bloom_rebuild_in_progress;       /* Rebuild lock */
+    /* Bloom filter (swappable for rebuild)
+     * 
+     * DOUBLE-INSERT STRATEGY: During rebuild, bloom_staging_filter_ptr points
+     * to the new filter being built. bloom_add() writes to BOTH active and
+     * staging filters to prevent race conditions. */
+    _Atomic(_Atomic uint8_t*) bloom_filter_ptr;         /* Current active filter */
+    _Atomic(_Atomic uint8_t*) bloom_staging_filter_ptr; /* New filter during rebuild (NULL when not rebuilding) */
+    _Atomic uint64_t bloom_ones_count;                  /* Approximate bits set */
+    _Atomic int bloom_rebuild_in_progress;              /* Rebuild lock */
     
     /* Global sequence counter for ABA detection */
     _Atomic uint64_t global_seq;
@@ -174,6 +242,7 @@ typedef struct MemProfGlobalState {
     _Atomic uint64_t heap_map_deletions;
     _Atomic uint64_t heap_map_full_drops;
     _Atomic uint64_t stack_table_collisions;
+    _Atomic uint64_t stack_table_saturations;  /* Times stack table was full */
     _Atomic uint64_t bloom_rebuilds;
     _Atomic uint64_t death_during_birth;
     _Atomic uint64_t zombie_races_detected;

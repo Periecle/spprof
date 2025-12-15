@@ -4,14 +4,37 @@
  * Captures native stack frames via frame pointer walking and integrates
  * with Python's frame walker for mixed-mode (Python + native) stacks.
  *
- * Frame Pointer Requirement:
- * The profiler relies on frame pointer walking which requires code to be
- * compiled with -fno-omit-frame-pointer. Many C extensions omit frame
- * pointers for performance, which will result in truncated stacks.
+ * FRAME POINTER REQUIREMENT:
+ *   The profiler relies on frame pointer walking which requires code to be
+ *   compiled with -fno-omit-frame-pointer. Many C extensions omit frame
+ *   pointers for performance, which will result in truncated stacks.
+ *
+ * ASYNC-SIGNAL-SAFETY:
+ *   capture_native_stack() is async-signal-safe - no malloc, no locks.
+ *   resolve_stack_entry() is NOT async-signal-safe - uses malloc/dladdr.
+ *
+ * PLATFORM SUPPORT:
+ *   - x86_64 (Linux/macOS): RBP-based frame walking
+ *   - ARM64 (Linux/macOS): X29-based frame walking
+ *   - x86 (32-bit): EBP-based frame walking
+ *   - Windows x64: _AddressOfReturnAddress intrinsic
+ *
+ * SYMBOL RESOLUTION:
+ *   - POSIX: dladdr() for function names and library paths
+ *   - Windows: DbgHelp SymFromAddr() (when available)
+ *
+ * Copyright (c) 2024 spprof contributors
  */
 
 #ifndef SPPROF_STACK_CAPTURE_H
 #define SPPROF_STACK_CAPTURE_H
+
+/* _GNU_SOURCE for dladdr on Linux */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#endif
 
 #include "memprof.h"
 #include <stdint.h>
@@ -141,6 +164,16 @@ void get_frame_pointer_health(uint64_t* out_shallow_warnings,
                                uint64_t* out_total_stacks,
                                float* out_avg_depth,
                                int* out_min_depth);
+
+/* ============================================================================
+ * String Interning (memory optimization)
+ * ============================================================================ */
+
+/**
+ * Clean up the string interning table.
+ * Called at profiler shutdown to free all interned strings.
+ */
+void string_table_destroy(void);
 
 /* ============================================================================
  * Optional DWARF Unwinding (compile-time feature)

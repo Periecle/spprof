@@ -699,7 +699,7 @@ static PyObject* spprof_memprof_get_stats(PyObject* self, PyObject* args) {
         "freed_samples", (unsigned long long)stats.freed_samples,
         "unique_stacks", (unsigned int)stats.unique_stacks,
         "estimated_heap_bytes", (unsigned long long)stats.estimated_heap_bytes,
-        "heap_map_load_percent", stats.heap_map_load_percent,
+        "heap_map_load_percent", (double)stats.heap_map_load_percent,
         "collisions", (unsigned long long)stats.collisions,
         "sampling_rate_bytes", (unsigned long long)stats.sampling_rate_bytes,
         "shallow_stack_warnings", (unsigned long long)stats.shallow_stack_warnings,
@@ -739,13 +739,11 @@ static PyObject* spprof_memprof_get_snapshot(PyObject* self, PyObject* args) {
         HeapMapEntry* entry = &entries[i];
         
         uintptr_t ptr = atomic_load(&entry->ptr);
-        uint64_t metadata = atomic_load(&entry->metadata);
+        uint32_t stack_id = atomic_load(&entry->stack_id);
+        uint64_t size = atomic_load(&entry->size);
+        uint32_t weight = atomic_load(&entry->weight);
         uint64_t birth_seq = atomic_load(&entry->birth_seq);
         uint64_t timestamp = entry->timestamp;
-        
-        uint32_t stack_id = METADATA_STACK_ID(metadata);
-        uint32_t size = METADATA_SIZE(metadata);
-        uint32_t weight = METADATA_WEIGHT(metadata);
         
         /* Build stack frames list */
         PyObject* stack_list = PyList_New(0);
@@ -786,9 +784,9 @@ static PyObject* spprof_memprof_get_snapshot(PyObject* self, PyObject* args) {
         
         /* Build entry dict */
         PyObject* entry_dict = Py_BuildValue(
-            "{s:K, s:I, s:I, s:K, s:K, s:O}",
+            "{s:K, s:K, s:I, s:K, s:K, s:O}",
             "address", (unsigned long long)ptr,
-            "size", (unsigned int)size,
+            "size", (unsigned long long)size,  /* Now 64-bit for large allocations */
             "weight", (unsigned int)weight,
             "timestamp_ns", (unsigned long long)timestamp,
             "birth_seq", (unsigned long long)birth_seq,
@@ -821,7 +819,7 @@ static PyObject* spprof_memprof_get_snapshot(PyObject* self, PyObject* args) {
         "{s:K, s:K, s:f, s:i}",
         "shallow_stack_warnings", (unsigned long long)shallow_warnings,
         "total_native_stacks", (unsigned long long)total_stacks,
-        "avg_native_depth", avg_depth,
+        "avg_native_depth", (double)avg_depth,
         "min_native_depth", min_depth
     );
     

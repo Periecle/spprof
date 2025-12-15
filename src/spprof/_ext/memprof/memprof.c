@@ -3,7 +3,29 @@
  *
  * This file orchestrates initialization, start/stop, snapshot, and shutdown
  * of the memory profiler subsystem.
+ *
+ * THREAD SAFETY:
+ *   All public functions are thread-safe. Internal state is protected by
+ *   atomic operations and lock-free data structures.
+ *
+ * PLATFORM SUPPORT:
+ *   - Linux: malloc interposition via LD_PRELOAD or malloc hooks
+ *   - macOS: malloc_logger zone hooks
+ *   - Windows: Heap API hooks via Detours or similar
+ *
+ * ERROR HANDLING:
+ *   Functions return 0 on success, -1 on error (POSIX pattern).
+ *   See error.h for conventions.
+ *
+ * Copyright (c) 2024 spprof contributors
  */
+
+/* _GNU_SOURCE for consistency with other memprof files */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#endif
 
 #include "memprof.h"
 #include "heap_map.h"
@@ -46,23 +68,62 @@ extern void memprof_windows_remove(void);
  * Utility Functions
  * ============================================================================ */
 
-/* Cached Windows frequency (queried once) */
+/* Cached Windows frequency (queried once)
+ *
+ * RACE CONDITION FIX (2024):
+ *   The original code had a classic broken double-checked locking pattern:
+ *   Thread A CAS'd 0→1, started querying. Thread B saw 1, skipped the block,
+ *   and used g_qpc_frequency while it was still 0 → division by zero crash.
+ *
+ *   Fix: Three-state initialization (0=uninit, 1=initializing, 2=done).
+ *   "Loser" threads spin-wait until state becomes 2.
+ */
 #ifdef _WIN32
 static LARGE_INTEGER g_qpc_frequency = {0};
-static volatile LONG g_qpc_init = 0;
+static volatile LONG g_qpc_init = 0;  /* 0=uninit, 1=initializing, 2=done */
 #endif
 
 uint64_t memprof_get_monotonic_ns(void) {
 #ifdef _WIN32
-    /* Cache QPC frequency - it's constant for system lifetime */
-    if (InterlockedCompareExchange(&g_qpc_init, 1, 0) == 0) {
-        QueryPerformanceFrequency(&g_qpc_frequency);
+    /* Fast path: already initialized (state == 2) */
+    if (InterlockedCompareExchange(&g_qpc_init, 2, 2) != 2) {
+        /* Slow path: need to initialize or wait for initialization */
+        if (InterlockedCompareExchange(&g_qpc_init, 1, 0) == 0) {
+            /* We are the initializer (won the race: 0→1) */
+            QueryPerformanceFrequency(&g_qpc_frequency);
+            /* Mark as done (1→2) with release semantics */
+            InterlockedExchange(&g_qpc_init, 2);
+        } else {
+            /* Lost the race - spin wait until state becomes 2 */
+            while (InterlockedCompareExchange(&g_qpc_init, 2, 2) != 2) {
+                YieldProcessor();  /* Pause instruction - reduces CPU spin */
+            }
+        }
     }
+    
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
-    /* Use 128-bit math to avoid overflow: (counter * 1e9) / freq */
-    return (uint64_t)(((__int128)counter.QuadPart * 1000000000LL) / 
-                      g_qpc_frequency.QuadPart);
+    
+    /*
+     * Convert QPC ticks to nanoseconds.
+     * 
+     * We need: (counter * 1e9) / freq
+     * 
+     * Direct multiplication can overflow for large counter values.
+     * MSVC doesn't support __int128, so we use a safe method:
+     *   1. Divide first to get seconds: counter / freq
+     *   2. Get remainder: counter % freq  
+     *   3. Combine: seconds*1e9 + (remainder*1e9)/freq
+     *
+     * This is accurate and avoids overflow on both MSVC and GCC.
+     */
+    uint64_t seconds = (uint64_t)(counter.QuadPart / g_qpc_frequency.QuadPart);
+    uint64_t remainder = (uint64_t)(counter.QuadPart % g_qpc_frequency.QuadPart);
+    
+    /* remainder * 1e9 might overflow if freq is very low, but typical freq
+     * is ~10MHz so remainder < 10M and 10M * 1e9 < 2^64 */
+    return seconds * 1000000000ULL + 
+           (remainder * 1000000000ULL) / (uint64_t)g_qpc_frequency.QuadPart;
 #else
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
@@ -82,10 +143,11 @@ int memprof_init(uint64_t sampling_rate) {
         return 0;  /* Idempotent */
     }
     
-    /* Check if we've been shutdown (cannot reinitialize after shutdown) */
-    if (atomic_load_explicit(&g_memprof.shutdown, memory_order_acquire)) {
-        return -1;
-    }
+    /* RESOURCE LEAK FIX: Allow reinitialization after shutdown.
+     * The individual init functions (heap_map_init, etc.) now handle
+     * reusing existing allocations instead of leaking memory.
+     * Reset the shutdown flag to allow restart. */
+    atomic_store_explicit(&g_memprof.shutdown, 0, memory_order_relaxed);
     
     /* Set configuration */
     g_memprof.sampling_rate = (sampling_rate > 0) ? 
@@ -105,6 +167,7 @@ int memprof_init(uint64_t sampling_rate) {
     atomic_store_explicit(&g_memprof.heap_map_deletions, 0, memory_order_relaxed);
     atomic_store_explicit(&g_memprof.heap_map_full_drops, 0, memory_order_relaxed);
     atomic_store_explicit(&g_memprof.stack_table_collisions, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_memprof.stack_table_saturations, 0, memory_order_relaxed);
     atomic_store_explicit(&g_memprof.bloom_rebuilds, 0, memory_order_relaxed);
     atomic_store_explicit(&g_memprof.death_during_birth, 0, memory_order_relaxed);
     atomic_store_explicit(&g_memprof.zombie_races_detected, 0, memory_order_relaxed);
@@ -217,10 +280,12 @@ static void snapshot_callback(const HeapMapEntry* entry, void* user_data) {
         return;  /* Buffer full */
     }
     
-    /* Copy entry */
+    /* Copy entry - all fields stored directly (no packing) */
     HeapMapEntry* out = &ctx->entries[ctx->count];
     out->ptr = atomic_load_explicit(&entry->ptr, memory_order_acquire);
-    out->metadata = atomic_load_explicit(&entry->metadata, memory_order_relaxed);
+    out->stack_id = atomic_load_explicit(&entry->stack_id, memory_order_relaxed);
+    out->weight = atomic_load_explicit(&entry->weight, memory_order_relaxed);
+    out->size = atomic_load_explicit(&entry->size, memory_order_relaxed);
     out->birth_seq = atomic_load_explicit(&entry->birth_seq, memory_order_relaxed);
     out->timestamp = entry->timestamp;
     

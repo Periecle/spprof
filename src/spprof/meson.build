@@ -124,16 +124,19 @@ if host_machine.system() == 'linux'
     ext_src_dir / 'memprof' / 'sampling.c',
     ext_src_dir / 'memprof' / 'stack_capture.c',
     ext_src_dir / 'platform' / 'linux_memprof.c',
+    ext_src_dir / 'framewalker.c',
+    ext_src_dir / 'resolver.c',
+    ext_src_dir / 'code_registry.c',
+    ext_src_dir / 'unwind.c',
   )
   
   # Compiler flags for the LD_PRELOAD library
   alloc_lib_c_args = common_c_args + [
-    '-DSPPROF_STANDALONE_LIB=1',  # Mark as standalone (no Python)
     '-fPIC',
   ]
   
   # Libraries needed
-  alloc_lib_deps = [dl_dep, pthread_dep, m_dep]
+  alloc_lib_deps = platform_deps + [py_dep]
   
   shared_library(
     'spprof_alloc',
@@ -143,6 +146,7 @@ if host_machine.system() == 'linux'
     c_args: alloc_lib_c_args,
     install: true,
     install_dir: get_option('libdir'),
+    override_options: ['b_lundef=false'],
   )
 endif
 

@@ -4,7 +4,30 @@
  * This implements a lock-free hash table using open addressing with linear
  * probing. The key insight is a two-phase insert (reserve→finalize) that
  * prevents the "free-before-insert" race condition.
+ *
+ * TWO-PHASE INSERT:
+ *   Phase 1 (reserve): CAS EMPTY/TOMBSTONE → RESERVED
+ *   Phase 2 (finalize): CAS RESERVED → actual_pointer
+ *
+ *   This allows free() to safely handle "death during birth" - when an
+ *   allocation is freed before its heap_map entry is finalized. free()
+ *   will CAS RESERVED → TOMBSTONE, and finalize() will detect this.
+ *
+ * ZOMBIE DETECTION (macOS):
+ *   On macOS, malloc_logger is a POST-hook: real_free() returns before
+ *   our handle_free() runs. An address can be reused by another malloc()
+ *   before we process the free. We use global sequence numbers to detect
+ *   this "zombie" race: if entry->birth_seq > free_seq, it's a new alloc.
+ *
+ * Copyright (c) 2024 spprof contributors
  */
+
+/* _GNU_SOURCE for consistency with other memprof files */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#endif
 
 #include "heap_map.h"
 #include "memprof.h"
@@ -13,6 +36,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <intrin.h>  /* For _mm_pause() spin hint */
 #else
 #include <sys/mman.h>
 #include <unistd.h>
@@ -24,6 +48,15 @@
 
 int heap_map_init(void) {
     size_t size = MEMPROF_HEAP_MAP_CAPACITY * sizeof(HeapMapEntry);
+    
+    /* RESOURCE LEAK FIX: If heap_map already exists (e.g., after shutdown
+     * without full cleanup), reuse it instead of allocating new memory.
+     * This prevents ~24MB leak on profiler restart. */
+    if (g_memprof.heap_map != NULL) {
+        /* Clear and reuse existing allocation */
+        memset(g_memprof.heap_map, 0, size);
+        return 0;
+    }
     
 #ifdef _WIN32
     g_memprof.heap_map = (HeapMapEntry*)VirtualAlloc(
@@ -68,9 +101,9 @@ int heap_map_reserve(uintptr_t ptr) {
                     &entry->ptr, &expected, HEAP_ENTRY_RESERVED,
                     memory_order_acq_rel, memory_order_relaxed)) {
                 
-                /* Slot claimed. Store ptr temporarily in metadata for matching
-                 * during "death during birth" detection. */
-                atomic_store_explicit(&entry->metadata, (uint64_t)ptr,
+                /* Slot claimed. Store ptr temporarily in size field for matching
+                 * during "death during birth" detection. Both are 64-bit. */
+                atomic_store_explicit(&entry->size, (uint64_t)ptr,
                                       memory_order_release);
                 
                 /* Track tombstone recycling for diagnostics */
@@ -105,7 +138,7 @@ int heap_map_reserve(uintptr_t ptr) {
  * ============================================================================ */
 
 int heap_map_finalize(int slot_idx, uintptr_t ptr, uint32_t stack_id,
-                      uint32_t size, uint32_t weight, uint64_t birth_seq,
+                      uint64_t size, uint32_t weight, uint64_t birth_seq,
                       uint64_t timestamp) {
     if (slot_idx < 0 || slot_idx >= MEMPROF_HEAP_MAP_CAPACITY) {
         return 0;
@@ -113,16 +146,12 @@ int heap_map_finalize(int slot_idx, uintptr_t ptr, uint32_t stack_id,
     
     HeapMapEntry* entry = &g_memprof.heap_map[slot_idx];
     
-    /* Clamp size to 24-bit max (16MB) */
-    if (size > MAX_ALLOC_SIZE) {
-        size = MAX_ALLOC_SIZE;
-    }
+    /* No artificial size limit - store full 64-bit size */
     
-    /* Pack metadata */
-    uint64_t packed_metadata = METADATA_PACK(stack_id, size, weight);
-    
-    /* Store metadata first (relaxed OK, ptr publish provides release) */
-    atomic_store_explicit(&entry->metadata, packed_metadata, memory_order_relaxed);
+    /* Store fields directly (no packing needed) */
+    atomic_store_explicit(&entry->stack_id, stack_id, memory_order_relaxed);
+    atomic_store_explicit(&entry->weight, weight, memory_order_relaxed);
+    atomic_store_explicit(&entry->size, size, memory_order_relaxed);
     atomic_store_explicit(&entry->birth_seq, birth_seq, memory_order_relaxed);
     entry->timestamp = timestamp;  /* Non-atomic, protected by state transition */
     
@@ -149,7 +178,7 @@ int heap_map_finalize(int slot_idx, uintptr_t ptr, uint32_t stack_id,
  * ============================================================================ */
 
 int heap_map_remove(uintptr_t ptr, uint64_t free_seq, uint64_t free_timestamp,
-                    uint32_t* out_stack_id, uint32_t* out_size,
+                    uint32_t* out_stack_id, uint64_t* out_size,
                     uint32_t* out_weight, uint64_t* out_duration) {
     uint64_t idx = heap_map_hash_ptr(ptr) & MEMPROF_HEAP_MAP_MASK;
     
@@ -182,12 +211,13 @@ int heap_map_remove(uintptr_t ptr, uint64_t free_seq, uint64_t free_timestamp,
             
             /* Safe to remove - normal removal path */
             
-            /* Extract metadata for caller */
-            uint64_t metadata = atomic_load_explicit(&entry->metadata,
-                                                      memory_order_relaxed);
-            if (out_stack_id) *out_stack_id = METADATA_STACK_ID(metadata);
-            if (out_size)     *out_size = METADATA_SIZE(metadata);
-            if (out_weight)   *out_weight = METADATA_WEIGHT(metadata);
+            /* Extract fields directly (no unpacking needed) */
+            if (out_stack_id) *out_stack_id = atomic_load_explicit(&entry->stack_id,
+                                                                    memory_order_relaxed);
+            if (out_size)     *out_size = atomic_load_explicit(&entry->size,
+                                                                memory_order_relaxed);
+            if (out_weight)   *out_weight = atomic_load_explicit(&entry->weight,
+                                                                  memory_order_relaxed);
             if (out_duration) {
                 uint64_t entry_ts = entry->timestamp;
                 *out_duration = (free_timestamp > entry_ts) ?
@@ -206,10 +236,45 @@ int heap_map_remove(uintptr_t ptr, uint64_t free_seq, uint64_t free_timestamp,
             return 1;
         }
         
-        /* Check if this RESERVED slot is for our ptr (stored in metadata) */
+        /* Check if this RESERVED slot is for our ptr (stored in size field).
+         *
+         * RACE FIX: There's a window between CAS(RESERVED) and store(size)
+         * where size might be 0 (or stale). We must handle this case.
+         *
+         * If size is 0 and this is the first probe location for our ptr,
+         * spin briefly - the writing thread is likely about to store it.
+         */
         if (entry_ptr == HEAP_ENTRY_RESERVED) {
-            uint64_t reserved_ptr = atomic_load_explicit(&entry->metadata,
+            uint64_t reserved_ptr = atomic_load_explicit(&entry->size,
                                                           memory_order_acquire);
+            
+            /* If size is 0, the writer hasn't finished storing it yet.
+             * Spin briefly (the window is typically < 100 cycles). */
+            if (reserved_ptr == 0) {
+                /* Only spin if this is on our probe path (hash matches first slot) */
+                uint64_t expected_idx = heap_map_hash_ptr(ptr) & MEMPROF_HEAP_MAP_MASK;
+                if (idx == expected_idx || probe < 4) {
+                    /* Brief spin - writer is likely about to store value */
+                    for (int spin = 0; spin < 16; spin++) {
+                        /* Yield hint to CPU (reduces power, improves latency) */
+                        #if defined(_MSC_VER)
+                        _mm_pause();
+                        #elif defined(__x86_64__) || defined(__i386__)
+                        __asm__ volatile("pause" ::: "memory");
+                        #elif defined(__aarch64__)
+                        __asm__ volatile("yield" ::: "memory");
+                        #else
+                        /* No-op on other platforms */
+                        atomic_thread_fence(memory_order_seq_cst);
+                        #endif
+                        
+                        reserved_ptr = atomic_load_explicit(&entry->size,
+                                                             memory_order_acquire);
+                        if (reserved_ptr != 0) break;
+                    }
+                }
+            }
+            
             if (reserved_ptr == (uint64_t)ptr) {
                 /* "Death during birth" - tombstone the RESERVED slot.
                  * The allocating thread's finalize() will see this and clean up. */
