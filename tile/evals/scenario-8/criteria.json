@@ -1,0 +1,27 @@
+{
+  "context": "Evaluates correct error handling for spprof's start() and stop() functions. Checks that the candidate catches ValueError for invalid interval_ms, RuntimeError for double-start, and RuntimeError for double-stop, with appropriate messages printed.",
+  "type": "weighted_checklist",
+  "capability_tested": "Error Handling and Validation",
+  "checklist": [
+    {
+      "name": "ValueError on invalid interval",
+      "description": "ValueError is caught when interval_ms < 1 (e.g., interval_ms=0) and 'Error: invalid interval' is printed",
+      "max_score": 25
+    },
+    {
+      "name": "RuntimeError on double-start",
+      "description": "RuntimeError is caught when start() is called while profiling is already active and 'Error: already running' is printed",
+      "max_score": 30
+    },
+    {
+      "name": "RuntimeError on double-stop",
+      "description": "RuntimeError is caught when stop() is called when profiling is not active and 'Error: not running' is printed",
+      "max_score": 30
+    },
+    {
+      "name": "Profile returned on success",
+      "description": "safe_profile(10) returns the valid Profile object from the successful stop() call",
+      "max_score": 15
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "context": "Evaluates correct use of Profile.to_speedscope() and Profile.save() in spprof. Checks that the candidate understands the Speedscope output format, correctly calls the conversion method, and validates the output structure.",
+  "type": "weighted_checklist",
+  "capability_tested": "Speedscope JSON Output",
+  "checklist": [
+    {
+      "name": "to_speedscope() called",
+      "description": "profile.to_speedscope() is called to get the Speedscope dictionary",
+      "max_score": 30
+    },
+    {
+      "name": "Schema key verified",
+      "description": "The '$schema' key is checked in the resulting dictionary",
+      "max_score": 15
+    },
+    {
+      "name": "shared.frames verified",
+      "description": "The 'shared' key and its 'frames' list are accessed or verified",
+      "max_score": 15
+    },
+    {
+      "name": "save() with default format",
+      "description": "profile.save('output.json') is called (without explicitly specifying format, or with format='speedscope')",
+      "max_score": 25
+    },
+    {
+      "name": "profiles count printed",
+      "description": "The length of the 'profiles' list is printed",
+      "max_score": 15
+    }
+  ]
+}

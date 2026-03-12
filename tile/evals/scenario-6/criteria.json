@@ -1,0 +1,37 @@
+{
+  "context": "Evaluates correct access to Profile properties and metadata fields in spprof. Checks that the candidate accesses the computed properties (sample_count, total_duration_ms, effective_rate_hz) and direct fields (dropped_count, python_version, platform) and formats the output correctly.",
+  "type": "weighted_checklist",
+  "capability_tested": "Profile Properties and Metadata",
+  "checklist": [
+    {
+      "name": "sample_count accessed",
+      "description": "profile.sample_count is accessed and printed",
+      "max_score": 15
+    },
+    {
+      "name": "total_duration_ms accessed",
+      "description": "profile.total_duration_ms is accessed and printed (rounded to 1 decimal place)",
+      "max_score": 20
+    },
+    {
+      "name": "effective_rate_hz accessed",
+      "description": "profile.effective_rate_hz is accessed and printed (rounded to 1 decimal place)",
+      "max_score": 20
+    },
+    {
+      "name": "dropped_count accessed",
+      "description": "profile.dropped_count is accessed and printed",
+      "max_score": 15
+    },
+    {
+      "name": "python_version accessed",
+      "description": "profile.python_version is accessed and printed",
+      "max_score": 15
+    },
+    {
+      "name": "platform accessed",
+      "description": "profile.platform is accessed and printed",
+      "max_score": 15
+    }
+  ]
+}

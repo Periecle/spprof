@@ -1,0 +1,32 @@
+{
+  "context": "Evaluates correct use of the procedural start/stop profiling API in spprof. Focuses on whether the candidate correctly calls start() with the right interval, retrieves the Profile from stop(), and accesses profile properties.",
+  "type": "weighted_checklist",
+  "capability_tested": "Basic Start/Stop Profiling",
+  "checklist": [
+    {
+      "name": "start() called correctly",
+      "description": "spprof.start() is called with interval_ms=5 before the workload runs",
+      "max_score": 25
+    },
+    {
+      "name": "stop() returns Profile",
+      "description": "spprof.stop() is called after the workload and its return value (Profile object) is stored in a variable",
+      "max_score": 25
+    },
+    {
+      "name": "sample_count accessed",
+      "description": "The profile's sample_count property is accessed and printed",
+      "max_score": 20
+    },
+    {
+      "name": "total_duration_ms accessed",
+      "description": "The profile's total_duration_ms property is accessed and printed (rounded to 2 decimal places)",
+      "max_score": 20
+    },
+    {
+      "name": "RuntimeError on double-start",
+      "description": "Calling start() while profiling is already active raises RuntimeError (either tested or handled appropriately)",
+      "max_score": 10
+    }
+  ]
+}
