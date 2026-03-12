@@ -1,0 +1,32 @@
+{
+  "context": "Evaluates correct use of spprof for multi-threaded profiling. Checks that the candidate starts profiling before threads are created, waits for all threads to complete before stopping, and correctly iterates over Profile.samples to extract per-thread information.",
+  "type": "weighted_checklist",
+  "capability_tested": "Multi-Thread Profiling Pattern",
+  "checklist": [
+    {
+      "name": "Profiler started before threads",
+      "description": "spprof.start() is called before any threading.Thread is created or started",
+      "max_score": 25
+    },
+    {
+      "name": "All threads joined before stop",
+      "description": "All 3 worker threads are joined (t.join()) before spprof.stop() is called",
+      "max_score": 25
+    },
+    {
+      "name": "Sample thread_id extracted",
+      "description": "profile.samples is iterated and thread_id is accessed from each Sample object to build a set of unique thread IDs",
+      "max_score": 30
+    },
+    {
+      "name": "Unique thread count printed",
+      "description": "The count of unique thread IDs is printed in the format 'threads observed: <n>'",
+      "max_score": 10
+    },
+    {
+      "name": "Total sample count printed",
+      "description": "The total number of samples is printed in the format 'total samples: <n>'",
+      "max_score": 10
+    }
+  ]
+}

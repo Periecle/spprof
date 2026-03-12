@@ -1,0 +1,27 @@
+{
+  "context": "Evaluates correct use of Profile.to_collapsed() and Profile.save() with collapsed format in spprof. Checks that the candidate understands the collapsed stack format, uses the correct format argument, and processes the output correctly.",
+  "type": "weighted_checklist",
+  "capability_tested": "Collapsed Stack Output",
+  "checklist": [
+    {
+      "name": "to_collapsed() called",
+      "description": "profile.to_collapsed() is called to get the collapsed stack string",
+      "max_score": 30
+    },
+    {
+      "name": "save() with collapsed format",
+      "description": "profile.save('output.collapsed', format='collapsed') is called with the correct format argument",
+      "max_score": 30
+    },
+    {
+      "name": "Line count computed",
+      "description": "The number of unique stack traces (non-empty lines) is computed from the collapsed string and printed",
+      "max_score": 25
+    },
+    {
+      "name": "Zero handled gracefully",
+      "description": "The script handles the case where the profile has no samples (prints 0 rather than crashing)",
+      "max_score": 15
+    }
+  ]
+}

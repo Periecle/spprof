@@ -1,0 +1,32 @@
+{
+  "context": "Evaluates correct use of the spprof.profile decorator. Checks that the candidate applies the decorator factory with proper arguments, that the decorated function retains its return value, and that the output file is created automatically.",
+  "type": "weighted_checklist",
+  "capability_tested": "Decorator-Based Profiling",
+  "checklist": [
+    {
+      "name": "Decorator applied correctly",
+      "description": "spprof.profile is applied as a decorator factory using @spprof.profile(...) syntax above the function definition",
+      "max_score": 30
+    },
+    {
+      "name": "interval_ms specified",
+      "description": "interval_ms=20 is passed to the decorator",
+      "max_score": 15
+    },
+    {
+      "name": "output_path specified",
+      "description": "output_path='compute_profile.json' is passed to the decorator",
+      "max_score": 20
+    },
+    {
+      "name": "Return value preserved",
+      "description": "The decorated function still returns the correct numeric result from compute(n)",
+      "max_score": 20
+    },
+    {
+      "name": "Profile file created",
+      "description": "After calling the decorated function, compute_profile.json exists on disk",
+      "max_score": 15
+    }
+  ]
+}

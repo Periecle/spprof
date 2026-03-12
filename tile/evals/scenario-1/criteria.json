@@ -1,0 +1,32 @@
+{
+  "context": "Evaluates correct use of the Profiler context manager in spprof. Checks that the candidate uses 'with spprof.Profiler(...) as p:' syntax, accesses p.profile after the block, and correctly uses Profile methods to save and query results.",
+  "type": "weighted_checklist",
+  "capability_tested": "Context Manager Profiling",
+  "checklist": [
+    {
+      "name": "Profiler as context manager",
+      "description": "spprof.Profiler is used with the 'with' statement and bound to a variable (e.g., 'with spprof.Profiler(...) as p:')",
+      "max_score": 30
+    },
+    {
+      "name": "interval_ms configured",
+      "description": "The Profiler is instantiated with interval_ms=10",
+      "max_score": 15
+    },
+    {
+      "name": "profile accessed post-context",
+      "description": "After the with block, the profile result is accessed via the context manager variable's .profile attribute",
+      "max_score": 25
+    },
+    {
+      "name": "profile.save() called",
+      "description": "profile.save('output.json') is called to write the profile to disk",
+      "max_score": 20
+    },
+    {
+      "name": "effective_rate_hz printed",
+      "description": "profile.effective_rate_hz is accessed and printed",
+      "max_score": 10
+    }
+  ]
+}

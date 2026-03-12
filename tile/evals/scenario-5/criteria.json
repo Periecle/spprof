@@ -1,0 +1,27 @@
+{
+  "context": "Evaluates correct use of the output_path auto-save feature in spprof's start() function. Checks that the candidate passes output_path to start() (not to save() separately), that the directory is created automatically, and that the file exists after stop() completes.",
+  "type": "weighted_checklist",
+  "capability_tested": "Auto-Save Profile on Stop",
+  "checklist": [
+    {
+      "name": "output_path passed to start()",
+      "description": "output_path='profiles/run1/result.json' is passed to spprof.start() (not called separately on the profile object)",
+      "max_score": 40
+    },
+    {
+      "name": "File exists after stop()",
+      "description": "After spprof.stop() is called, profiles/run1/result.json exists on disk",
+      "max_score": 30
+    },
+    {
+      "name": "Existence check and print",
+      "description": "The script checks whether the file exists and prints 'Saved' or 'Missing' accordingly",
+      "max_score": 20
+    },
+    {
+      "name": "Directory auto-creation",
+      "description": "The profiles/run1/ directory is not manually pre-created; it is handled by the profiler",
+      "max_score": 10
+    }
+  ]
+}
