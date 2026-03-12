@@ -1,31 +1,36 @@
 {
-  "context": "Evaluates correct use of the procedural start/stop profiling API in spprof. Focuses on whether the candidate correctly calls start() with the right interval, retrieves the Profile from stop(), and accesses profile properties.",
+  "context": "Evaluates correct usage of spprof's functional start/stop API. The candidate must use start() and stop() correctly, handle the returned Profile object, and demonstrate knowledge of error conditions (double-start, stop-without-start, invalid interval).",
   "type": "weighted_checklist",
-  "capability_tested": "Basic Start/Stop Profiling",
+  "capability_tested": "Functional Start/Stop Profiling",
   "checklist": [
     {
-      "name": "start() called correctly",
-      "description": "spprof.start() is called with interval_ms=5 before the workload runs",
-      "max_score": 25
-    },
-    {
-      "name": "stop() returns Profile",
-      "description": "spprof.stop() is called after the workload and its return value (Profile object) is stored in a variable",
-      "max_score": 25
-    },
-    {
-      "name": "sample_count accessed",
-      "description": "The profile's sample_count property is accessed and printed",
+      "name": "Correct start() call",
+      "description": "Calls spprof.start() with interval_ms=5 (or equivalent keyword argument) before the workload runs.",
       "max_score": 20
     },
     {
-      "name": "total_duration_ms accessed",
-      "description": "The profile's total_duration_ms property is accessed and printed (rounded to 2 decimal places)",
+      "name": "Correct stop() call",
+      "description": "Calls spprof.stop() after the workload and captures the returned Profile object.",
       "max_score": 20
     },
     {
-      "name": "RuntimeError on double-start",
-      "description": "Calling start() while profiling is already active raises RuntimeError (either tested or handled appropriately)",
+      "name": "Profile result usage",
+      "description": "Accesses profile.sample_count and profile.total_duration_ms (or equivalent Profile properties) and prints them.",
+      "max_score": 15
+    },
+    {
+      "name": "Double-start raises RuntimeError",
+      "description": "Demonstrates or handles the RuntimeError raised when start() is called while the profiler is already active.",
+      "max_score": 20
+    },
+    {
+      "name": "Stop-without-start raises RuntimeError",
+      "description": "Demonstrates or handles the RuntimeError raised when stop() is called while the profiler is not active.",
+      "max_score": 15
+    },
+    {
+      "name": "Invalid interval raises ValueError",
+      "description": "Demonstrates or handles the ValueError raised when start() is called with interval_ms < 1.",
       "max_score": 10
     }
   ]

@@ -1,37 +1,32 @@
 {
-  "context": "Evaluates correct access to Profile properties and metadata fields in spprof. Checks that the candidate accesses the computed properties (sample_count, total_duration_ms, effective_rate_hz) and direct fields (dropped_count, python_version, platform) and formats the output correctly.",
+  "context": "Evaluates correct use of spprof's Speedscope export API. The candidate must use Profile.to_speedscope() to get a dict, Profile.save() to write a file, Profile.aggregate() followed by AggregatedProfile.save() for the aggregated form, and validate the output structure.",
   "type": "weighted_checklist",
-  "capability_tested": "Profile Properties and Metadata",
+  "capability_tested": "Export to Speedscope JSON Format",
   "checklist": [
     {
-      "name": "sample_count accessed",
-      "description": "profile.sample_count is accessed and printed",
+      "name": "to_speedscope() returns dict",
+      "description": "Calls profile.to_speedscope() (not save()) and verifies the return value is a dict with '$schema' and 'profiles' keys.",
+      "max_score": 25
+    },
+    {
+      "name": "save() writes Speedscope file",
+      "description": "Calls profile.save('profile.json') (using the default speedscope format) and verifies the file exists and contains valid JSON.",
+      "max_score": 25
+    },
+    {
+      "name": "JSON structure validation",
+      "description": "Reads the saved file with json.load() and confirms it has '$schema' and 'profiles' keys.",
       "max_score": 15
     },
     {
-      "name": "total_duration_ms accessed",
-      "description": "profile.total_duration_ms is accessed and printed (rounded to 1 decimal place)",
-      "max_score": 20
+      "name": "Aggregated Speedscope export",
+      "description": "Calls profile.aggregate() to get an AggregatedProfile, then calls .save('profile_agg.json') or .to_speedscope() on the result.",
+      "max_score": 25
     },
     {
-      "name": "effective_rate_hz accessed",
-      "description": "profile.effective_rate_hz is accessed and printed (rounded to 1 decimal place)",
-      "max_score": 20
-    },
-    {
-      "name": "dropped_count accessed",
-      "description": "profile.dropped_count is accessed and printed",
-      "max_score": 15
-    },
-    {
-      "name": "python_version accessed",
-      "description": "profile.python_version is accessed and printed",
-      "max_score": 15
-    },
-    {
-      "name": "platform accessed",
-      "description": "profile.platform is accessed and printed",
-      "max_score": 15
+      "name": "Aggregated file validation",
+      "description": "Reads profile_agg.json and confirms it is valid JSON with '$schema' and 'profiles' keys.",
+      "max_score": 10
     }
   ]
 }

@@ -1,26 +1,27 @@
-# Export Profile in Collapsed Stack Format
+# Handle Profiler Error Conditions
 
-Write a Python script that profiles a computation and exports the result in collapsed stack format, which is compatible with FlameGraph tools such as Brendan Gregg's `flamegraph.pl`.
+Use a sampling profiler library and write code that demonstrates and correctly handles all documented error conditions.
 
 ## Requirements
 
-- Profile a workload using any profiling method
-- Convert the profile to collapsed stack format using the appropriate method
-- The collapsed format is a multi-line string where each line has the form: `frame1;frame2;...;frameN count`
-- Save the profile to `"output.collapsed"` using the collapsed format
-- Print the number of unique stack traces (lines) in the collapsed output
+Demonstrate the following four error conditions by writing code that triggers each and catches the expected exception type:
 
-If the profile has no samples (e.g., the workload was too fast), print `0` for the line count.
+1. Starting the profiler with `interval_ms` set to a value less than 1 must raise a `ValueError`.
+2. Starting the profiler when it is already running must raise a `RuntimeError`.
+3. Stopping the profiler when it is not running must raise a `RuntimeError`.
+4. Starting the profiler with an `output_path` pointing to a directory that cannot be created (e.g., a path inside a non-existent root like `/nonexistent_root_dir/profile.json` that will fail on write) must raise a `PermissionError`.
+
+For each case, print a confirmation message indicating the error was caught.
 
 ## Test Cases
 
-- `profile.to_collapsed()` returns a string @test
-- `profile.save("output.collapsed", format="collapsed")` creates a file @test
-- Each non-empty line in the collapsed output ends with a space and an integer count @test
-- The number of unique stack traces is printed as an integer @test
+- Pass interval_ms=0 to start; confirm ValueError is raised. [@test](./test_invalid_interval_zero.py)
+- Call start() twice in a row; confirm RuntimeError is raised on the second call. [@test](./test_double_start.py)
+- Call stop() without calling start; confirm RuntimeError is raised. [@test](./test_stop_not_running.py)
+- Call start() with an unwritable output path; confirm PermissionError is raised. [@test](./test_unwritable_path.py)
 
 ## Dependencies { .dependencies }
 
 ### spprof 0.1.0 { .dependency }
 
-High-performance sampling profiler for Python applications. The `Profile` object has a `to_collapsed()` method returning a collapsed stack string, and `save()` accepts `format="collapsed"` to write in FlameGraph-compatible format.
+High-performance sampling profiler for Python that raises specific exceptions for misuse.

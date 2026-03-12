@@ -1,0 +1,8 @@
+{
+  "name": "reodont-personal/spprof",
+  "version": "0.1.0",
+  "docs": "docs/index.md",
+  "describes": "pkg:pypi/spprof@0.1.0",
+  "summary": "High-performance sampling profiler for Python applications with Speedscope and FlameGraph output.",
+  "private": true
+}

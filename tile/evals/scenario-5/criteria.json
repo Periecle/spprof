@@ -1,27 +1,32 @@
 {
-  "context": "Evaluates correct use of the output_path auto-save feature in spprof's start() function. Checks that the candidate passes output_path to start() (not to save() separately), that the directory is created automatically, and that the file exists after stop() completes.",
+  "context": "Evaluates understanding of spprof's Profile, Sample, and Frame data model. The candidate must correctly traverse Profile.samples, access Sample fields (timestamp_ns, thread_id, thread_name, frames), and navigate Frame attributes (function_name, filename, lineno, is_native).",
   "type": "weighted_checklist",
-  "capability_tested": "Auto-Save Profile on Stop",
+  "capability_tested": "Profile Data Model",
   "checklist": [
     {
-      "name": "output_path passed to start()",
-      "description": "output_path='profiles/run1/result.json' is passed to spprof.start() (not called separately on the profile object)",
-      "max_score": 40
+      "name": "Profile top-level fields",
+      "description": "Accesses and prints profile.sample_count, profile.total_duration_ms, profile.effective_rate_hz, profile.dropped_count, profile.python_version, and profile.platform.",
+      "max_score": 25
     },
     {
-      "name": "File exists after stop()",
-      "description": "After spprof.stop() is called, profiles/run1/result.json exists on disk",
-      "max_score": 30
-    },
-    {
-      "name": "Existence check and print",
-      "description": "The script checks whether the file exists and prints 'Saved' or 'Missing' accordingly",
+      "name": "Iterates profile.samples",
+      "description": "Iterates over profile.samples (list of Sample objects) or accesses profile.samples[0].",
       "max_score": 20
     },
     {
-      "name": "Directory auto-creation",
-      "description": "The profiles/run1/ directory is not manually pre-created; it is handled by the profiler",
-      "max_score": 10
+      "name": "Sample field access",
+      "description": "Reads sample.thread_id and sample.frames from at least one Sample object.",
+      "max_score": 20
+    },
+    {
+      "name": "Frame attribute access",
+      "description": "Reads frame.function_name, frame.filename, frame.lineno from at least one Frame in a sample's frames list.",
+      "max_score": 20
+    },
+    {
+      "name": "Frame.is_native boolean check",
+      "description": "Accesses frame.is_native and confirms it is a boolean value.",
+      "max_score": 15
     }
   ]
 }

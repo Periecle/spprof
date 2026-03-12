@@ -1,27 +1,29 @@
-# Check Profiler Status and Live Statistics
+# Aggregate Profile Samples to Reduce Memory Usage
 
-Write a Python script that demonstrates how to check whether the profiler is currently running and how to retrieve live profiling statistics during an active session.
+Use a sampling profiler library to profile a repetitive workload, then aggregate the resulting profile to reduce memory usage by merging identical call stacks.
 
 ## Requirements
 
-- Before starting, verify that the profiler is not active and print `"active before start: False"`
-- Start the profiler with a 10ms interval
-- After starting, verify the profiler is active and print `"active after start: True"`
-- Call the function that retrieves live statistics and print the number of collected samples so far
-- Run a workload (at least 500,000 iterations)
-- Stop the profiler
-- After stopping, verify the profiler is no longer active and print `"active after stop: False"`
-- Verify that attempting to get statistics after stopping returns `None` and print `"stats after stop: None"`
+1. Profile a repetitive workload (a loop calling `math.sqrt(x)` 1,000,000 times) using a 1ms sampling interval.
+2. Stop profiling to get the raw Profile object.
+3. Call the aggregation method on the Profile to get an AggregatedProfile.
+4. From the AggregatedProfile, read and print:
+   - `unique_stack_count`: number of distinct call stacks
+   - `compression_ratio`: ratio of original sample count to unique stack count
+   - `memory_reduction_pct`: estimated memory reduction percentage
+   - `total_samples`: original number of samples before aggregation
+5. Verify that `total_samples` on the AggregatedProfile equals `sample_count` on the original Profile.
+6. Verify that the aggregated stacks list contains `AggregatedStack` items, each with `frames`, `thread_id`, `thread_name`, and `count` attributes.
 
 ## Test Cases
 
-- Before start, the profiler status check returns `False` @test
-- After start, the profiler status check returns `True` @test
-- After stop, the profiler status check returns `False` @test
-- The live statistics function returns `None` when profiling is not active @test
+- Profile a repetitive workload, aggregate it, and verify agg.total_samples == profile.sample_count. [@test](./test_total_samples_match.py)
+- Verify agg.unique_stack_count is a positive integer <= agg.total_samples. [@test](./test_unique_stack_count.py)
+- Verify each item in agg.stacks has a count >= 1 and a frames list. [@test](./test_aggregated_stack_items.py)
+- Verify agg.compression_ratio >= 1.0. [@test](./test_compression_ratio.py)
 
 ## Dependencies { .dependencies }
 
 ### spprof 0.1.0 { .dependency }
 
-High-performance sampling profiler for Python applications. Provides `is_active()` to check profiler state and `stats()` to retrieve a `ProfilerStats` object (or `None` if inactive) with `collected_samples`, `dropped_samples`, `duration_ms`, and `overhead_estimate_pct`.
+High-performance sampling profiler for Python with profile aggregation support.

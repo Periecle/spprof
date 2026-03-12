@@ -1,26 +1,22 @@
 # Profile a Function Using a Decorator
 
-Write a Python script that uses the decorator form of a sampling profiler to automatically profile a function every time it is called.
+Use a sampling profiler library to profile a function by applying it as a decorator.
 
 ## Requirements
 
-- Define a function `compute(n)` that computes the sum of squares from 0 to n-1
-- Apply the profiler decorator to `compute` with a 20ms interval and output path `"compute_profile.json"`
-- Call `compute(500_000)`
-- Verify that `compute_profile.json` is created after the function call
-- The function must still return the correct numeric result (sum of squares)
-
-The decorator must be applied using the `@decorator_name(...)` syntax above the function definition.
+1. Define a function `compute(n)` that returns the sum of integers from 0 to n-1.
+2. Apply the profiler as a decorator to `compute`, using a 1ms sampling interval and saving the profile to `compute_profile.json`.
+3. Call `compute(500000)` and verify the return value is correct (i.e., `n*(n-1)//2`).
+4. Verify that the decorator preserves the original function's name (`compute`) and that the profile file is created after the function returns.
 
 ## Test Cases
 
-- `compute(500_000)` returns the correct sum of squares `41666416666750000` @test
-- After `compute(500_000)` is called, the file `compute_profile.json` exists @test
-- The decorator must preserve the function's return value @test
-- The decorator syntax must use `interval_ms` and `output_path` keyword arguments @test
+- Apply the decorator and call the decorated function; verify the return value equals the expected sum. [@test](./test_decorator_return_value.py)
+- Apply the decorator with output_path set; call the function, then verify the output file exists. [@test](./test_decorator_output_file.py)
+- Verify that the decorated function's `__name__` attribute is `"compute"` (i.e., functools.wraps is used). [@test](./test_decorator_preserves_name.py)
 
 ## Dependencies { .dependencies }
 
 ### spprof 0.1.0 { .dependency }
 
-High-performance sampling profiler for Python applications. Provides a `profile` decorator factory for profiling individual functions, accepting `interval_ms` and `output_path` arguments.
+High-performance sampling profiler for Python with a function decorator interface.

@@ -1,24 +1,22 @@
-# Profile Code Using a Context Manager
+# Profile a Code Block with a Context Manager
 
-Write a Python script that profiles a CPU-intensive computation using the context manager API of a sampling profiler. The context manager should automatically start and stop profiling around the code block.
+Use a sampling profiler library to profile a block of code using its context manager interface.
 
 ## Requirements
 
-- Use the context manager form (the `with` statement) to profile a workload
-- Configure the profiler with a 10ms sampling interval
-- After the context block exits, access the profile result from the context manager object
-- Save the profile to a file named `output.json`
-- Print the effective sampling rate in Hz (samples per second)
+1. Profile a workload (a tight loop computing a sum) using the context manager form of the profiler, with a 2ms sampling interval.
+2. After the `with` block exits, access the profile result from the context manager object and print the number of samples collected.
+3. Verify that the profile property is `None` while profiling is still active (i.e., inside the `with` block) and is not `None` after exiting.
+4. Configure the context manager to automatically save the profile to a file named `output.json` when the context exits.
 
 ## Test Cases
 
-- The context manager must start profiling on entry and stop on exit @test
-- After the `with` block, the profile attribute on the context manager object must not be `None` @test
-- `profile.save("output.json")` must create a file at the given path @test
-- `effective_rate_hz` should be a non-negative float @test
+- Use the profiler context manager with interval_ms=2, profile a workload, then verify the profile result is accessible and has a non-negative sample_count. [@test](./test_context_manager_basic.py)
+- Verify that the profile property is None while inside the `with` block. [@test](./test_profile_none_during.py)
+- Configure output_path on the context manager, run a workload, and verify the file is created on disk after the context exits. [@test](./test_context_manager_autosave.py)
 
 ## Dependencies { .dependencies }
 
 ### spprof 0.1.0 { .dependency }
 
-High-performance sampling profiler for Python applications. Provides a `Profiler` context manager class for profiling code blocks, with access to the `Profile` result via the context manager instance.
+High-performance sampling profiler for Python with a context manager interface.

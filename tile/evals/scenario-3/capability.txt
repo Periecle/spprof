@@ -1,1 +1,1 @@
-Speedscope JSON Output
+Live Profiling Status Check

@@ -1,31 +1,31 @@
 {
-  "context": "Evaluates correct use of spprof for multi-threaded profiling. Checks that the candidate starts profiling before threads are created, waits for all threads to complete before stopping, and correctly iterates over Profile.samples to extract per-thread information.",
+  "context": "Evaluates correct use of spprof's native C-stack unwinding API. The candidate must call native_unwinding_available() to guard the feature, call set_native_unwinding(True/False) appropriately, verify state with native_unwinding_enabled(), and handle the RuntimeError when the feature is unavailable.",
   "type": "weighted_checklist",
-  "capability_tested": "Multi-Thread Profiling Pattern",
+  "capability_tested": "Enable/Disable Native C-Stack Unwinding",
   "checklist": [
     {
-      "name": "Profiler started before threads",
-      "description": "spprof.start() is called before any threading.Thread is created or started",
+      "name": "Availability check",
+      "description": "Calls spprof.native_unwinding_available() and branches on its boolean result before calling set_native_unwinding().",
       "max_score": 25
     },
     {
-      "name": "All threads joined before stop",
-      "description": "All 3 worker threads are joined (t.join()) before spprof.stop() is called",
+      "name": "Enable unwinding when available",
+      "description": "When native_unwinding_available() returns True, calls spprof.set_native_unwinding(True) and then verifies spprof.native_unwinding_enabled() returns True.",
       "max_score": 25
     },
     {
-      "name": "Sample thread_id extracted",
-      "description": "profile.samples is iterated and thread_id is accessed from each Sample object to build a set of unique thread IDs",
-      "max_score": 30
+      "name": "RuntimeError when unavailable",
+      "description": "When native_unwinding_available() returns False, attempts to call set_native_unwinding(True) and catches or demonstrates the resulting RuntimeError.",
+      "max_score": 20
     },
     {
-      "name": "Unique thread count printed",
-      "description": "The count of unique thread IDs is printed in the format 'threads observed: <n>'",
-      "max_score": 10
+      "name": "Profiling with unwinding",
+      "description": "Calls spprof.start() after configuring native unwinding, runs a workload, calls spprof.stop(), and accesses frame.is_native on collected frames.",
+      "max_score": 20
     },
     {
-      "name": "Total sample count printed",
-      "description": "The total number of samples is printed in the format 'total samples: <n>'",
+      "name": "Disable and verify",
+      "description": "Calls spprof.set_native_unwinding(False) after profiling and verifies spprof.native_unwinding_enabled() returns False.",
       "max_score": 10
     }
   ]

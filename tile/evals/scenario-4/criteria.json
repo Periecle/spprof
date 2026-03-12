@@ -1,27 +1,32 @@
 {
-  "context": "Evaluates correct use of Profile.to_collapsed() and Profile.save() with collapsed format in spprof. Checks that the candidate understands the collapsed stack format, uses the correct format argument, and processes the output correctly.",
+  "context": "Evaluates knowledge of spprof's documented error conditions. The candidate must trigger and correctly catch ValueError (bad interval), RuntimeError (double start or stop-without-start), and PermissionError (unwritable output path).",
   "type": "weighted_checklist",
-  "capability_tested": "Collapsed Stack Output",
+  "capability_tested": "Error Handling for Invalid Usage",
   "checklist": [
     {
-      "name": "to_collapsed() called",
-      "description": "profile.to_collapsed() is called to get the collapsed stack string",
-      "max_score": 30
+      "name": "ValueError on bad interval",
+      "description": "Triggers spprof.start(interval_ms=0) or interval_ms < 1 and catches the resulting ValueError.",
+      "max_score": 20
     },
     {
-      "name": "save() with collapsed format",
-      "description": "profile.save('output.collapsed', format='collapsed') is called with the correct format argument",
-      "max_score": 30
-    },
-    {
-      "name": "Line count computed",
-      "description": "The number of unique stack traces (non-empty lines) is computed from the collapsed string and printed",
+      "name": "RuntimeError on double start",
+      "description": "Calls start() twice without stop() and catches the RuntimeError raised on the second call. Cleans up (calls stop()) afterwards.",
       "max_score": 25
     },
     {
-      "name": "Zero handled gracefully",
-      "description": "The script handles the case where the profile has no samples (prints 0 rather than crashing)",
-      "max_score": 15
+      "name": "RuntimeError on stop-without-start",
+      "description": "Calls stop() when the profiler is not running and catches the RuntimeError.",
+      "max_score": 25
+    },
+    {
+      "name": "PermissionError on unwritable path",
+      "description": "Calls start(output_path=<unwritable_path>) and catches the PermissionError raised when the path cannot be written.",
+      "max_score": 20
+    },
+    {
+      "name": "Clean error messages",
+      "description": "Prints a meaningful confirmation message for each caught error to confirm the error type was correctly identified.",
+      "max_score": 10
     }
   ]
 }
