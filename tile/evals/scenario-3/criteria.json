@@ -1,32 +1,32 @@
 {
-  "context": "Evaluates correct use of Profile.to_speedscope() and Profile.save() in spprof. Checks that the candidate understands the Speedscope output format, correctly calls the conversion method, and validates the output structure.",
+  "context": "Evaluates correct use of spprof's is_active() and stats() functions. The candidate must check profiler state before/during/after profiling and correctly use the ProfilerStats result object.",
   "type": "weighted_checklist",
-  "capability_tested": "Speedscope JSON Output",
+  "capability_tested": "Live Profiling Status Check",
   "checklist": [
     {
-      "name": "to_speedscope() called",
-      "description": "profile.to_speedscope() is called to get the Speedscope dictionary",
-      "max_score": 30
+      "name": "is_active() before start",
+      "description": "Calls spprof.is_active() before start() and confirms it returns False.",
+      "max_score": 20
     },
     {
-      "name": "Schema key verified",
-      "description": "The '$schema' key is checked in the resulting dictionary",
+      "name": "is_active() after start",
+      "description": "Calls spprof.is_active() after start() and confirms it returns True.",
+      "max_score": 20
+    },
+    {
+      "name": "stats() returns None when inactive",
+      "description": "Calls spprof.stats() before start() and confirms it returns None.",
       "max_score": 15
     },
     {
-      "name": "shared.frames verified",
-      "description": "The 'shared' key and its 'frames' list are accessed or verified",
-      "max_score": 15
-    },
-    {
-      "name": "save() with default format",
-      "description": "profile.save('output.json') is called (without explicitly specifying format, or with format='speedscope')",
+      "name": "stats() returns ProfilerStats when active",
+      "description": "Calls spprof.stats() during profiling and verifies the result is not None and has a numeric collected_samples field.",
       "max_score": 25
     },
     {
-      "name": "profiles count printed",
-      "description": "The length of the 'profiles' list is printed",
-      "max_score": 15
+      "name": "is_active() after stop",
+      "description": "Calls spprof.is_active() after stop() and confirms it returns False.",
+      "max_score": 20
     }
   ]
 }

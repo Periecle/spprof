@@ -1,32 +1,32 @@
 {
-  "context": "Evaluates correct use of the Profiler context manager in spprof. Checks that the candidate uses 'with spprof.Profiler(...) as p:' syntax, accesses p.profile after the block, and correctly uses Profile methods to save and query results.",
+  "context": "Evaluates correct usage of the spprof Profiler context manager. The candidate must construct Profiler with interval_ms, use it as a context manager, access the profile property after the with-block, and use output_path for auto-saving.",
   "type": "weighted_checklist",
-  "capability_tested": "Context Manager Profiling",
+  "capability_tested": "Context Manager (Profiler class)",
   "checklist": [
     {
-      "name": "Profiler as context manager",
-      "description": "spprof.Profiler is used with the 'with' statement and bound to a variable (e.g., 'with spprof.Profiler(...) as p:')",
-      "max_score": 30
-    },
-    {
-      "name": "interval_ms configured",
-      "description": "The Profiler is instantiated with interval_ms=10",
-      "max_score": 15
-    },
-    {
-      "name": "profile accessed post-context",
-      "description": "After the with block, the profile result is accessed via the context manager variable's .profile attribute",
-      "max_score": 25
-    },
-    {
-      "name": "profile.save() called",
-      "description": "profile.save('output.json') is called to write the profile to disk",
+      "name": "Correct Profiler instantiation",
+      "description": "Constructs spprof.Profiler(interval_ms=2) or equivalent with valid interval_ms parameter.",
       "max_score": 20
     },
     {
-      "name": "effective_rate_hz printed",
-      "description": "profile.effective_rate_hz is accessed and printed",
-      "max_score": 10
+      "name": "Used as context manager",
+      "description": "Uses the Profiler instance with Python's 'with' statement (i.e., 'with spprof.Profiler(...) as p:').",
+      "max_score": 20
+    },
+    {
+      "name": "Accesses profile after exit",
+      "description": "Accesses p.profile after the with-block and uses it (e.g., prints p.profile.sample_count).",
+      "max_score": 20
+    },
+    {
+      "name": "profile is None during profiling",
+      "description": "Correctly identifies or tests that p.profile is None while still inside the with-block.",
+      "max_score": 15
+    },
+    {
+      "name": "output_path auto-save",
+      "description": "Passes output_path='output.json' (or equivalent) to Profiler and verifies the file is written after the context exits.",
+      "max_score": 25
     }
   ]
 }

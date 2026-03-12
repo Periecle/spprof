@@ -1,1 +1,1 @@
-Context Manager Profiling
+Context Manager (Profiler class)

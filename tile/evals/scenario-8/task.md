@@ -1,29 +1,24 @@
-# Handle Profiler Errors and Validate Input
+# Profile Multiple Worker Threads Using the Thread Context Manager
 
-Write a Python script that demonstrates proper error handling for the sampling profiler's error conditions.
+Use a sampling profiler library to profile multiple threads, ensuring each worker thread is correctly registered for profiling using the thread-local profiler context manager.
 
 ## Requirements
 
-Implement a function `safe_profile(interval_ms)` that:
-1. Validates that `interval_ms >= 1`; if not, catches the appropriate error and prints `"Error: invalid interval"`
-2. Starts the profiler with the given interval
-3. Attempts to start the profiler a second time; catches the appropriate error and prints `"Error: already running"`
-4. Runs a short workload
-5. Stops the profiler
-6. Attempts to stop the profiler again; catches the appropriate error and prints `"Error: not running"`
-7. Returns the profile from the first stop
-
-Call `safe_profile(10)` and also call `safe_profile(0)` to demonstrate invalid interval handling.
+1. Start the global profiler with a 5ms sampling interval.
+2. Launch 3 worker threads. In each worker thread, use the thread context manager (from the profiler library) to automatically register and unregister the thread for profiling around the workload. The workload is a tight loop computing `sum(range(100000))`.
+3. Wait for all 3 threads to complete.
+4. Stop the global profiler and capture the result.
+5. Print the total number of samples collected across all threads.
+6. Verify that the Profile contains samples from at least the main thread (thread_id is present in samples).
 
 ## Test Cases
 
-- `safe_profile(0)` catches the error raised when `interval_ms=0` and prints `"Error: invalid interval"` @test
-- `safe_profile(10)`: attempting to start while running raises an error caught and prints `"Error: already running"` @test
-- `safe_profile(10)`: attempting to stop twice raises an error caught and prints `"Error: not running"` @test
-- `safe_profile(10)` returns a valid profile object @test
+- Start profiling, launch 3 worker threads using the thread context manager, join all threads, stop profiling, and verify sample_count >= 0. [@test](./test_thread_profiler_basic.py)
+- Verify that the Profile's samples list contains Sample objects with valid thread_id (non-zero integer). [@test](./test_sample_thread_ids.py)
+- Verify the thread context manager can be used in a thread that runs while the profiler is active. [@test](./test_thread_profiler_context.py)
 
 ## Dependencies { .dependencies }
 
 ### spprof 0.1.0 { .dependency }
 
-High-performance sampling profiler for Python applications. `start()` raises `ValueError` when `interval_ms < 1`, `RuntimeError` when already running, and `stop()` raises `RuntimeError` when not running.
+High-performance sampling profiler for Python with thread-local profiling support.

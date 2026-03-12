@@ -1,1 +1,1 @@
-Profile Properties and Metadata
+Export to Speedscope JSON Format

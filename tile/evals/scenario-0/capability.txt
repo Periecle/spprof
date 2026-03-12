@@ -1,1 +1,1 @@
-Basic Start/Stop Profiling
+Functional Start/Stop Profiling

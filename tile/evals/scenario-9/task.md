@@ -1,27 +1,25 @@
-# Profile a Multi-Threaded Workload
+# Conditionally Enable Native C-Stack Unwinding for Mixed-Mode Profiling
 
-Write a Python script that profiles a multi-threaded computation and analyzes the per-thread sample data from the resulting profile.
+Use a sampling profiler library to check for native C-stack unwinding support and conditionally enable it before starting mixed-mode profiling.
 
 ## Requirements
 
-- Define a worker function `worker(n)` that computes the sum of `i * i` for `i` in range(n)
-- Start the profiler with a 5ms interval before creating threads
-- Create and start 3 worker threads, each computing `worker(500_000)`
-- Wait for all threads to complete
-- Stop the profiler
-- From the profile, collect the set of unique `thread_id` values from all samples
-- Print the number of unique threads observed: `"threads observed: <n>"`
-- Print the total sample count: `"total samples: <n>"`
+1. Check whether native C-stack unwinding is available on the current platform.
+2. If available, enable native unwinding and then verify it is enabled using the corresponding check function.
+3. If not available, print a message indicating it is unavailable, and verify that attempting to enable it raises a `RuntimeError`.
+4. Start profiling (with native unwinding enabled if available) using a 10ms interval, run a workload, and stop the profiler.
+5. Check the collected frames: if any frames are marked as native (i.e., `Frame.is_native == True`), print the native frame's function name.
+6. After profiling, disable native unwinding (if it was enabled) and verify it is now disabled.
 
 ## Test Cases
 
-- The profiler is started before threads are created @test
-- All 3 threads are started and joined before stop() is called @test
-- `profile.samples` contains `Sample` objects each with a `thread_id` attribute @test
-- The number of unique thread IDs observed is printed as an integer @test
+- Call the function that checks native unwinding availability and verify it returns a boolean. [@test](./test_native_available_bool.py)
+- Attempt to enable native unwinding when it is not available (mock or skip on supported platforms); verify RuntimeError is raised. [@test](./test_enable_when_unavailable.py)
+- If native unwinding is available, enable it and verify the enabled-check returns True; then disable it and verify the enabled-check returns False. [@test](./test_enable_disable_toggle.py)
+- Profile a workload with native unwinding enabled (if available) and verify Frame objects have an is_native boolean attribute. [@test](./test_native_frames_attribute.py)
 
 ## Dependencies { .dependencies }
 
 ### spprof 0.1.0 { .dependency }
 
-High-performance sampling profiler for Python applications. When started before spawning threads, automatically profiles all Python threads. The returned `Profile.samples` is a list of `Sample` objects, each with `thread_id`, `thread_name`, and `frames` attributes.
+High-performance sampling profiler for Python with native C-stack unwinding support.

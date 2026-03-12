@@ -1,26 +1,31 @@
 {
-  "context": "Evaluates correct error handling for spprof's start() and stop() functions. Checks that the candidate catches ValueError for invalid interval_ms, RuntimeError for double-start, and RuntimeError for double-stop, with appropriate messages printed.",
+  "context": "Evaluates correct use of spprof's ThreadProfiler context manager for multi-threaded profiling. The candidate must use ThreadProfiler inside worker threads (not register_thread/unregister_thread directly), start the global profiler before threads are launched, and stop it after threads complete.",
   "type": "weighted_checklist",
-  "capability_tested": "Error Handling and Validation",
+  "capability_tested": "ThreadProfiler Context Manager",
   "checklist": [
     {
-      "name": "ValueError on invalid interval",
-      "description": "ValueError is caught when interval_ms < 1 (e.g., interval_ms=0) and 'Error: invalid interval' is printed",
-      "max_score": 25
+      "name": "Global profiler started",
+      "description": "Calls spprof.start() before launching the worker threads.",
+      "max_score": 15
     },
     {
-      "name": "RuntimeError on double-start",
-      "description": "RuntimeError is caught when start() is called while profiling is already active and 'Error: already running' is printed",
-      "max_score": 30
+      "name": "ThreadProfiler used in threads",
+      "description": "Each worker thread uses 'with spprof.ThreadProfiler():' (or equivalent) around its workload instead of manually calling register_thread/unregister_thread.",
+      "max_score": 35
     },
     {
-      "name": "RuntimeError on double-stop",
-      "description": "RuntimeError is caught when stop() is called when profiling is not active and 'Error: not running' is printed",
-      "max_score": 30
+      "name": "Threads launched and joined",
+      "description": "Creates and starts 3 threading.Thread instances with the worker function and calls join() on all of them.",
+      "max_score": 20
     },
     {
-      "name": "Profile returned on success",
-      "description": "safe_profile(10) returns the valid Profile object from the successful stop() call",
+      "name": "Global profiler stopped",
+      "description": "Calls spprof.stop() after all threads have been joined and captures the Profile.",
+      "max_score": 15
+    },
+    {
+      "name": "Sample thread_id verification",
+      "description": "Inspects profile.samples and verifies that samples contain thread_id values that are non-zero integers.",
       "max_score": 15
     }
   ]

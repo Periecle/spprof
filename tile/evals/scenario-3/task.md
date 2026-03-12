@@ -1,24 +1,24 @@
-# Export Profile in Speedscope Format
+# Check Profiler Status and Live Statistics
 
-Write a Python script that profiles a computation and exports the result in Speedscope JSON format. The Speedscope format is the default output format and enables interactive flame graph visualization.
+Use a sampling profiler library to check whether profiling is active and retrieve live statistics during a profiling session.
 
 ## Requirements
 
-- Profile a workload using any profiling method (start/stop, context manager, or decorator)
-- Convert the profile to a Speedscope-compatible Python dictionary using the appropriate method
-- Verify the resulting dictionary contains the required Speedscope top-level keys: `"$schema"`, `"version"`, `"shared"`, and `"profiles"`
-- Save the profile to `"output.json"` using the default format (Speedscope)
-- Print the number of thread profiles present in the `"profiles"` list
+1. Before starting profiling, verify that the profiler is not active and that requesting statistics returns `None`.
+2. Start profiling with a 10ms interval.
+3. After starting, verify the profiler is reported as active.
+4. Run a workload (a tight loop) and retrieve the live statistics object; verify it has numeric fields for sample count and duration.
+5. Stop profiling; verify the profiler is no longer active.
 
 ## Test Cases
 
-- The Speedscope dict has a `"$schema"` key @test
-- The dict has a `"shared"` key containing a `"frames"` list @test
-- `profile.save("output.json")` writes a valid JSON file with the Speedscope schema key @test
-- The `"profiles"` list length is printed as an integer @test
+- Before calling start, verify the status check returns False (not active). [@test](./test_not_active_before_start.py)
+- Call start(), then verify the status check returns True (active). [@test](./test_active_after_start.py)
+- Call start(), run a workload, call stats(), and verify the result is not None and has a non-negative collected_samples field. [@test](./test_stats_during_profiling.py)
+- Call stop() after profiling; verify the status check returns False. [@test](./test_not_active_after_stop.py)
 
 ## Dependencies { .dependencies }
 
 ### spprof 0.1.0 { .dependency }
 
-High-performance sampling profiler for Python applications. The `Profile` object has a `to_speedscope()` method that returns a Speedscope-format dictionary, and a `save()` method that writes Speedscope JSON by default.
+High-performance sampling profiler for Python with status check and live statistics API.

@@ -1,32 +1,32 @@
 {
-  "context": "Evaluates correct use of spprof.is_active() and spprof.stats() for monitoring profiler state. Checks that the candidate uses is_active() to check status at multiple points and calls stats() to retrieve live statistics, handling the None return when profiling is inactive.",
+  "context": "Evaluates correct use of spprof's Profile.aggregate() method and the AggregatedProfile data model. The candidate must call aggregate(), read AggregatedProfile properties (unique_stack_count, compression_ratio, memory_reduction_pct, total_samples), and traverse AggregatedStack items.",
   "type": "weighted_checklist",
-  "capability_tested": "Profiler Status and Statistics",
+  "capability_tested": "Profile Aggregation",
   "checklist": [
     {
-      "name": "is_active() before start",
-      "description": "spprof.is_active() is called before start() and shown to return False",
+      "name": "aggregate() call",
+      "description": "Calls profile.aggregate() on the Profile object to obtain an AggregatedProfile instance.",
       "max_score": 20
     },
     {
-      "name": "is_active() after start",
-      "description": "spprof.is_active() is called after start() and shown to return True",
-      "max_score": 20
-    },
-    {
-      "name": "stats() called while active",
-      "description": "spprof.stats() is called while profiling is active and collected_samples is accessed from the result",
+      "name": "AggregatedProfile properties",
+      "description": "Reads and prints agg.unique_stack_count, agg.compression_ratio, agg.memory_reduction_pct, and agg.total_samples.",
       "max_score": 25
     },
     {
-      "name": "is_active() after stop",
-      "description": "spprof.is_active() is called after stop() and shown to return False",
+      "name": "total_samples matches sample_count",
+      "description": "Verifies that agg.total_samples equals profile.sample_count.",
       "max_score": 20
     },
     {
-      "name": "stats() returns None after stop",
-      "description": "spprof.stats() is called after stop() and the None return is handled and printed",
-      "max_score": 15
+      "name": "AggregatedStack traversal",
+      "description": "Iterates over agg.stacks and accesses .frames, .count, .thread_id on at least one AggregatedStack.",
+      "max_score": 25
+    },
+    {
+      "name": "compression_ratio >= 1.0",
+      "description": "Verifies that agg.compression_ratio is >= 1.0, indicating aggregation did not inflate the data.",
+      "max_score": 10
     }
   ]
 }

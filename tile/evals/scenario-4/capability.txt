@@ -1,1 +1,1 @@
-Collapsed Stack Output
+Error Handling for Invalid Usage
