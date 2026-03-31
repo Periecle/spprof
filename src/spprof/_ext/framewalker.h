@@ -120,5 +120,18 @@ int framewalker_native_unwinding_enabled(void);
  */
 int framewalker_native_unwinding_available(void);
 
+/**
+ * Resolve a code object pointer to function name, file name, and line number.
+ *
+ * REQUIRES GIL.
+ *
+ * @param code_ptr    Raw PyCodeObject* pointer
+ * @param func_name   Output: allocated function name string (caller must free)
+ * @param file_name   Output: allocated file name string (caller must free)
+ * @param line_no     Output: first line number
+ * @return 0 on success, -1 on error
+ */
+int resolve_code_object(uintptr_t code_ptr, char** func_name, char** file_name, int* line_no);
+
 #endif /* SPPROF_FRAMEWALKER_H */
 

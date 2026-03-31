@@ -110,6 +110,15 @@ _spprof_tstate_get(void) {
      * if no thread state exists (rather than raising an exception).
      */
     return PyThreadState_GetUnchecked();
+#elif defined(Py_DEBUG)
+    /*
+     * In debug builds, PyThreadState_GET() calls PyThreadState_Get() which
+     * asserts that the GIL is held and aborts if not.
+     * We use _PyThreadState_UncheckedGet() (available since 3.5.2) which
+     * reads from TLS directly without the check.
+     */
+    extern PyThreadState* _PyThreadState_UncheckedGet(void);
+    return _PyThreadState_UncheckedGet();
 #else
     /*
      * Python 3.9-3.12: PyThreadState_GET() reads from _Py_tss_tstate

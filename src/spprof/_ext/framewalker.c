@@ -370,3 +370,68 @@ void framewalker_debug_print(void) {
 }
 
 #endif /* SPPROF_DEBUG */
+
+/* ============================================================================
+ * Code Object Resolution (for memory profiler)
+ * ============================================================================ */
+
+/**
+ * Resolve a code object pointer to function name, file name, and line number.
+ *
+ * REQUIRES GIL.
+ *
+ * @param code_ptr    Raw PyCodeObject* pointer
+ * @param func_name   Output: allocated function name string (caller must free)
+ * @param file_name   Output: allocated file name string (caller must free)
+ * @param line_no     Output: first line number
+ * @return 0 on success, -1 on error
+ */
+int resolve_code_object(uintptr_t code_ptr, char** func_name, char** file_name, int* line_no) {
+    if (code_ptr == 0 || !func_name || !file_name || !line_no) {
+        return -1;
+    }
+    
+    *func_name = NULL;
+    *file_name = NULL;
+    *line_no = 0;
+    
+    /* Validate pointer alignment */
+    if ((code_ptr & 0x7) != 0) {
+        return -1;
+    }
+    
+    PyCodeObject* code = (PyCodeObject*)code_ptr;
+    
+    /* Use PyCode_Check to validate - requires GIL */
+    if (!PyCode_Check(code)) {
+        return -1;
+    }
+    
+    /* Get function name */
+    PyObject* name_obj = code->co_qualname ? code->co_qualname : code->co_name;
+    if (name_obj && PyUnicode_Check(name_obj)) {
+        const char* name_str = PyUnicode_AsUTF8(name_obj);
+        if (name_str) {
+            *func_name = strdup(name_str);
+        }
+    }
+    if (!*func_name) {
+        *func_name = strdup("<unknown>");
+    }
+    
+    /* Get file name */
+    if (code->co_filename && PyUnicode_Check(code->co_filename)) {
+        const char* file_str = PyUnicode_AsUTF8(code->co_filename);
+        if (file_str) {
+            *file_name = strdup(file_str);
+        }
+    }
+    if (!*file_name) {
+        *file_name = strdup("<unknown>");
+    }
+    
+    /* Get first line number */
+    *line_no = code->co_firstlineno;
+    
+    return 0;
+}

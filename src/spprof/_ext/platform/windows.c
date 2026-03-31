@@ -846,8 +846,26 @@ uint64_t platform_monotonic_ns(void) {
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
 
-    /* Convert to nanoseconds using integer math to avoid floating point */
-    return (uint64_t)(counter.QuadPart * 1000000000ULL / g_perf_freq.QuadPart);
+    /*
+     * Convert QPC ticks to nanoseconds.
+     * 
+     * We need: (counter * 1e9) / freq
+     * 
+     * OVERFLOW FIX (2024): Direct multiplication overflows after ~30 minutes
+     * on systems with 10MHz QPC frequency. Use safe method:
+     *   1. Divide first to get seconds: counter / freq
+     *   2. Get remainder: counter % freq  
+     *   3. Combine: seconds*1e9 + (remainder*1e9)/freq
+     *
+     * This is accurate and avoids overflow for the lifetime of any process.
+     */
+    uint64_t seconds = (uint64_t)(counter.QuadPart / g_perf_freq.QuadPart);
+    uint64_t remainder = (uint64_t)(counter.QuadPart % g_perf_freq.QuadPart);
+    
+    /* remainder * 1e9 won't overflow: typical freq is ~10MHz so 
+     * remainder < 10M and 10M * 1e9 < 2^64 */
+    return seconds * 1000000000ULL + 
+           (remainder * 1000000000ULL) / (uint64_t)g_perf_freq.QuadPart;
 }
 
 const char* platform_name(void) {

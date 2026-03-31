@@ -93,6 +93,7 @@ endif
 add_project_arguments(
   '-DSPPROF_PY_MAJOR=' + py_major,
   '-DSPPROF_PY_MINOR=' + py_minor,
+  '-DSPPROF_HAS_FRAMEWALKER=1',  # Enable Python frame capture in memory profiler
   language: 'c',
 )
 

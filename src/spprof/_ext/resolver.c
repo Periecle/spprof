@@ -40,21 +40,7 @@
 #include "resolver.h"
 #include "code_registry.h"
 #include "error.h"
-
-/*
- * _Py_CODEUNIT is an internal type not exposed in public headers for Python 3.13+.
- * We define our own compatible version for line number calculation.
- * Each instruction is a fixed-width 2-byte value: 1-byte opcode + 1-byte oparg.
- */
-#if PY_VERSION_HEX >= 0x030D0000
-typedef union {
-    uint16_t cache;
-    struct {
-        uint8_t code;
-        uint8_t arg;
-    } op;
-} _Py_CODEUNIT;
-#endif
+#include "internal/pycore_frame.h"  /* Shared _Py_CODEUNIT definition for 3.13+ */
 
 /*
  * =============================================================================
